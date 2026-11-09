@@ -29,7 +29,7 @@
 
 #include "host.h"
 
-uint64_t ddraw_frame(uint8_t *pixels, uint8_t palette[256 * 3], int *w, int *h);
+uint64_t ddraw_frame(uint32_t *pixels, int *w, int *h);
 void win_input(uint32_t message, uint32_t wparam, uint32_t lparam); /* user32.cpp */
 void win_mouse(int dx, int dy, int buttons);                       /* user32.cpp */
 void win_mouse_at(int x, int y);                                   /* user32.cpp */
@@ -352,10 +352,10 @@ static void play_script(int now_ms, int *buttons)
 
 /* ---- the picture ---- */
 
-static uint8_t pixels[640 * 480], palette[256 * 3];
+static uint32_t pixels[640 * 480]; /* ARGB, alpha 0 for the program's colour 0 */
 static int frame_w = 640, frame_h = 480;
 
-/* the 8-bit picture into a texture; transparent: colour 0 shows what's under it */
+/* the picture into a texture; transparent: colour 0 shows what's under it */
 static void upload(SDL_Texture *t, bool transparent)
 {
 	uint32_t *dst;
@@ -364,9 +364,8 @@ static void upload(SDL_Texture *t, bool transparent)
 	for (int y = 0; y < frame_h; y++) {
 		uint32_t *row = (uint32_t *)((uint8_t *)dst + y * pitch);
 		for (int x = 0; x < frame_w; x++) {
-			uint8_t p = pixels[y * frame_w + x];
-			uint32_t a = transparent && !p ? 0 : 0xff000000u;
-			row[x] = a | (uint32_t)palette[3 * p] << 16 | (uint32_t)palette[3 * p + 1] << 8 | palette[3 * p + 2];
+			uint32_t p = pixels[y * frame_w + x];
+			row[x] = transparent ? p : p | 0xff000000u;
 		}
 	}
 	SDL_UnlockTexture(t);
@@ -384,7 +383,7 @@ static SDL_FRect fit(int w, int h)
 static void show_frame(void)
 {
 	static uint64_t shown = ~0ull;
-	uint64_t n = ddraw_frame(pixels, palette, &frame_w, &frame_h);
+	uint64_t n = ddraw_frame(pixels, &frame_w, &frame_h);
 	uint64_t before = movie_count;
 	bool hd = movie_frame(&movie_pixels, &movie_w, &movie_h, &movie_count);
 	if (hd && movie_count != before && !movie_pixels.empty()) {
@@ -448,7 +447,7 @@ static void chunk(FILE *f, const char *type, const std::vector<uint8_t> &data)
 /* The picture, or during an HD movie its frame (RGB) */
 static void screenshot(const char *path)
 {
-	ddraw_frame(pixels, palette, &frame_w, &frame_h);
+	ddraw_frame(pixels, &frame_w, &frame_h);
 	bool hd = movie_frame(&movie_pixels, &movie_w, &movie_h, &movie_count) && !movie_pixels.empty();
 	FILE *f = fopen(path, "wb");
 	if (!f) return;
@@ -457,19 +456,14 @@ static void screenshot(const char *path)
 	std::vector<uint8_t> h;
 	put32(h, (uint32_t)w);
 	put32(h, (uint32_t)hh);
-	h.insert(h.end(), { 8, (uint8_t)(hd ? 2 : 3), 0, 0, 0 }); /* 8 bits, RGB or indexed */
+	h.insert(h.end(), { 8, 2, 0, 0, 0 }); /* 8 bits per channel, RGB */
 	chunk(f, "IHDR", h);
-	if (!hd) chunk(f, "PLTE", std::vector<uint8_t>(palette, palette + 768));
 	/* zlib with stored blocks, a filter byte (0) before each row */
 	std::vector<uint8_t> raw;
 	for (int y = 0; y < hh; y++) {
 		raw.push_back(0);
-		if (!hd) {
-			raw.insert(raw.end(), pixels + y * frame_w, pixels + (y + 1) * frame_w);
-			continue;
-		}
 		for (int x = 0; x < w; x++) {
-			uint32_t p = movie_pixels[(size_t)y * w + x];
+			uint32_t p = hd ? movie_pixels[(size_t)y * w + x] : pixels[y * frame_w + x];
 			raw.insert(raw.end(), { (uint8_t)(p >> 16), (uint8_t)(p >> 8), (uint8_t)p });
 		}
 	}

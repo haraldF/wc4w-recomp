@@ -11,8 +11,8 @@ of its own. The projects share nothing at build time.
 
 State: early. Headless, the game runs its first-time setup (speed test, video options), plays the
 intro as the 30th Anniversary Edition's HD movie (decoded with FFmpeg), flies the opening simulator
-mission and reaches the Duty Roster, with 8-bit gameflow and movies chosen in the setup (16-bit
-display modes aren't supported yet). See `CLAUDE.md` for details and what's missing.
+mission and reaches the Duty Roster and the first mission, with GOG's default (16-bit) video
+settings or 8-bit ones. See `CLAUDE.md` for details and what's missing.
 
 ## Building it yourself
 

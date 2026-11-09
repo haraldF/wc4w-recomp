@@ -7,7 +7,7 @@
 
 #include "win.h"
 
-void ddraw_show(const uint8_t *rows, uint32_t stride, int w, int h, const uint8_t rgb[256 * 3]); /* ddraw.cpp */
+void ddraw_show(const uint32_t *rows, int w, int h); /* ddraw.cpp: ARGB, top-down */
 
 static uint32_t selected_palette; /* the LOGPALETTE (SelectPalette): DIB_PAL_COLORS index it */
 
@@ -67,33 +67,66 @@ API(GDI32, CreateDIBSection, 6)
 
 /* StretchDIBits(hdc, x, y, w, h, xSrc, ySrc, wSrc, hSrc, bits, bmi, usage, rop): an 8-bit DIB, its
  * colours from its table (DIB_RGB_COLORS: RGBQUADs) or the selected palette (DIB_PAL_COLORS: WORD
- * indices), shown unscaled from (0, 0); bottom-up DIBs (positive height) turned over. */
+ * indices), or a 16-bit one (BI_RGB: 5-5-5; BI_BITFIELDS: its masks), shown unscaled from (0, 0);
+ * bottom-up DIBs (positive height) turned over. Colour 0 stays transparent (alpha 0) for the HD
+ * movies under it. */
 API(GDI32, StretchDIBits, 13)
 {
 	uint32_t bits = arg(9), bi = arg(10), usage = arg(11);
 	int32_t w = (int32_t)rd32(bi + 4), h = (int32_t)rd32(bi + 8);
-	uint32_t bpp = (uint32_t)mrd32(bi + 14, 2), header = rd32(bi), used = rd32(bi + 32);
-	if (bpp != 8) {
+	uint32_t bpp = (uint32_t)mrd32(bi + 14, 2), compression = rd32(bi + 16), header = rd32(bi), used = rd32(bi + 32);
+	if ((bpp != 8 && bpp != 16) || w <= 0) {
 		fprintf(stderr, "wc: StretchDIBits of a %u-bit DIB is not supported\n", bpp);
 		return 0;
 	}
-	uint8_t rgb[256 * 3] = {};
-	uint32_t table = bi + header, n = used ? std::min(used, 256u) : 256u;
-	for (uint32_t i = 0; i < n; i++) {
-		if (usage == 1) { /* DIB_PAL_COLORS */
-			uint32_t k = (uint32_t)mrd32(table + 2 * i, 2);
-			if (selected_palette && k < (uint32_t)mrd32(selected_palette + 2, 2)) {
-				for (int c = 0; c < 3; c++) rgb[3 * i + c] = M[selected_palette + 4 + 4 * k + c];
+	uint32_t table = bi + header, rows = (uint32_t)(h < 0 ? -h : h);
+	uint32_t stride = ((uint32_t)w * bpp / 8 + 3) & ~3u;
+	std::vector<uint32_t> out((size_t)w * rows);
+	if (bpp == 8) {
+		uint32_t pal[256] = {}, n = used ? std::min(used, 256u) : 256u;
+		for (uint32_t i = 0; i < n; i++) {
+			uint32_t r = 0, g = 0, b = 0;
+			if (usage == 1) { /* DIB_PAL_COLORS */
+				uint32_t k = (uint32_t)mrd32(table + 2 * i, 2);
+				if (selected_palette && k < (uint32_t)mrd32(selected_palette + 2, 2)) {
+					uint32_t e = selected_palette + 4 + 4 * k;
+					r = M[e], g = M[e + 1], b = M[e + 2];
+				}
 			}
+			else {
+				r = M[table + 4 * i + 2], g = M[table + 4 * i + 1], b = M[table + 4 * i];
+			}
+			pal[i] = (i ? 0xff000000u : 0) | r << 16 | g << 8 | b;
 		}
-		else {
-			for (int c = 0; c < 3; c++) rgb[3 * i + c] = M[table + 4 * i + 2 - c];
+		for (uint32_t y = 0; y < rows; y++) {
+			const uint8_t *src = M + bits + (h < 0 ? y : rows - 1 - y) * stride;
+			for (int32_t x = 0; x < w; x++) out[(size_t)y * w + x] = pal[src[x]];
 		}
 	}
-	uint32_t stride = ((uint32_t)w + 3) & ~3u, rows = (uint32_t)(h < 0 ? -h : h);
-	std::vector<uint8_t> top_down(stride * rows);
-	for (uint32_t y = 0; y < rows; y++)
-		memcpy(top_down.data() + y * stride, M + bits + (h < 0 ? y : rows - 1 - y) * stride, stride);
-	ddraw_show(top_down.data(), stride, w, (int)rows, rgb);
+	else {
+		/* the masks: BI_BITFIELDS has them after the header, BI_RGB is 5-5-5 */
+		uint32_t mask[3] = { 0x7c00, 0x03e0, 0x001f };
+		if (compression == 3) {
+			for (int c = 0; c < 3; c++) mask[c] = rd32(table + 4 * (uint32_t)c);
+		}
+		int shift[3], width[3];
+		for (int c = 0; c < 3; c++) {
+			uint32_t m = mask[c] ? mask[c] : 1;
+			shift[c] = __builtin_ctz(m);
+			width[c] = __builtin_popcount(m);
+		}
+		for (uint32_t y = 0; y < rows; y++) {
+			const uint8_t *src = M + bits + (h < 0 ? y : rows - 1 - y) * stride;
+			for (int32_t x = 0; x < w; x++) {
+				uint32_t p = (uint32_t)src[2 * x] | (uint32_t)src[2 * x + 1] << 8, v = p ? 0xff000000u : 0;
+				for (int c = 0; c < 3; c++) {
+					uint32_t k = (p & mask[c]) >> shift[c], max = (1u << width[c]) - 1;
+					v |= (max ? k * 255 / max : 0) << (16 - 8 * c);
+				}
+				out[(size_t)y * w + x] = v;
+			}
+		}
+	}
+	ddraw_show(out.data(), w, (int)rows);
 	return rows;
 }

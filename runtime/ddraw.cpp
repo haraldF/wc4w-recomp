@@ -1,8 +1,8 @@
-/* DirectDraw (version 1 and 2 interfaces): the display mode (640x480, 8 bits), surfaces in the
- * program's memory (the primary with its back buffer, off-screen ones), palettes, clippers. The
- * objects are COM objects in the program's memory: a pointer to a table of thunks, whose methods
- * run here. What the primary surface shows goes to the host (present()) at each Flip, and when the
- * program writes to the primary itself (Unlock, Blt). */
+/* DirectDraw (version 1 and 2 interfaces): the display mode (640x480, 8 or 16 bits: RGB565),
+ * surfaces in the program's memory (the primary with its back buffer, off-screen ones), palettes,
+ * clippers. The objects are COM objects in the program's memory: a pointer to a table of thunks,
+ * whose methods run here. What the primary surface shows goes to the host (present(), as ARGB) at
+ * each Flip, and when the program writes to the primary itself (Unlock, Blt). */
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -29,6 +29,7 @@ enum : uint32_t {
 
 struct surface {
 	uint32_t w, h, pitch, bits, caps;
+	uint32_t bpp = 8;     /* 8 (palette indices) or 16 (RGB565) */
 	uint32_t back = 0;    /* the primary's back buffer (a surface object) */
 	uint32_t palette = 0; /* a palette object */
 	uint32_t src_key = 0;
@@ -39,12 +40,19 @@ std::map<uint32_t, std::vector<uint8_t>> palettes; /* by object address: 256 x R
 uint32_t primary;
 uint32_t mode_w = 640, mode_h = 480, mode_bpp = 8;
 
-/* the frame the host shows */
+/* the frame the host shows: ARGB, alpha 0 where the program's picture is "transparent" (colour 0:
+ * index 0, or the 16-bit value 0), which shows an HD movie under it */
 std::mutex frame_lock;
-uint8_t frame[640 * 480];
-uint8_t frame_palette[256 * 3];
+uint32_t frame[640 * 480];
 int frame_w = 640, frame_h = 480;
 uint64_t frame_count;
+
+uint32_t argb565(uint32_t p)
+{
+	if (!p) return 0;
+	uint32_t r = p >> 11 & 31, g = p >> 5 & 63, b = p & 31;
+	return 0xff000000u | (r << 3 | r >> 2) << 16 | (g << 2 | g >> 4) << 8 | (b << 3 | b >> 2);
+}
 
 uint32_t vt_dd1, vt_dd2, vt_surface, vt_palette, vt_clipper;
 
@@ -77,11 +85,22 @@ void present(void)
 	std::lock_guard<std::mutex> g(frame_lock);
 	frame_w = (int)std::min(s.w, 640u);
 	frame_h = (int)std::min(s.h, 480u);
-	for (int y = 0; y < frame_h; y++) memcpy(frame + y * frame_w, M + s.bits + (uint32_t)y * s.pitch, (size_t)frame_w);
+	uint32_t pal[256] = {};
 	auto p = palettes.find(s.palette);
 	if (p != palettes.end()) {
 		for (int i = 0; i < 256; i++) {
-			for (int c = 0; c < 3; c++) frame_palette[3 * i + c] = p->second[4 * i + c];
+			const uint8_t *e = &p->second[4 * (size_t)i];
+			pal[i] = (i ? 0xff000000u : 0) | (uint32_t)e[0] << 16 | (uint32_t)e[1] << 8 | e[2];
+		}
+	}
+	for (int y = 0; y < frame_h; y++) {
+		const uint8_t *row = M + s.bits + (uint32_t)y * s.pitch;
+		uint32_t *out = frame + y * frame_w;
+		if (s.bpp == 16) {
+			for (int x = 0; x < frame_w; x++) out[x] = argb565((uint32_t)row[2 * x] | (uint32_t)row[2 * x + 1] << 8);
+		}
+		else {
+			for (int x = 0; x < frame_w; x++) out[x] = pal[row[x]];
 		}
 	}
 	frame_count++;
@@ -118,7 +137,7 @@ uint32_t DD_SetDisplayMode1()
 {
 	mode_w = arg(1), mode_h = arg(2), mode_bpp = arg(3);
 	if (wc_trace) fprintf(stderr, " [mode %ux%ux%u]", mode_w, mode_h, mode_bpp);
-	return mode_bpp == 8 && mode_w <= 640 && mode_h <= 480 ? DD_OK : DDERR_UNSUPPORTED;
+	return (mode_bpp == 8 || mode_bpp == 16) && mode_w <= 640 && mode_h <= 480 ? DD_OK : DDERR_UNSUPPORTED;
 }
 uint32_t DD_RestoreDisplayMode() { return DD_OK; }
 uint32_t DD_FlipToGDISurface() { return DD_OK; }
@@ -134,10 +153,18 @@ uint32_t DD_WaitForVerticalBlank()
 	return DD_OK;
 }
 
-void put_pixel_format(uint32_t pf)
+void put_pixel_format(uint32_t pf, uint32_t bpp)
 {
 	memset(M + pf, 0, 32);
 	wr32(pf, 32);
+	if (bpp == 16) {
+		wr32(pf + 4, 0x40); /* DDPF_RGB: 5-6-5 */
+		wr32(pf + 12, 16);
+		wr32(pf + 16, 0xf800);
+		wr32(pf + 20, 0x07e0);
+		wr32(pf + 24, 0x001f);
+		return;
+	}
 	wr32(pf + 4, 0x20 | 0x40); /* DDPF_PALETTEINDEXED8 | DDPF_RGB */
 	wr32(pf + 12, 8);
 }
@@ -153,14 +180,14 @@ void put_desc(uint32_t d, const surface &s)
 	wr32(d + 12, s.w);
 	wr32(d + 16, s.pitch);
 	wr32(d + 36, s.bits);
-	put_pixel_format(d + 72);
+	put_pixel_format(d + 72, s.bpp);
 	wr32(d + 104, s.caps);
 }
 
-uint32_t new_surface(uint32_t w, uint32_t h, uint32_t caps)
+uint32_t new_surface(uint32_t w, uint32_t h, uint32_t caps, uint32_t bpp)
 {
 	uint32_t o = make_object(vt_surface);
-	surface s{ w, h, (w + 3) & ~3u, 0, caps };
+	surface s{ w, h, (w * (bpp / 8) + 3) & ~3u, 0, caps, bpp };
 	s.bits = region_alloc(0, s.pitch * h);
 	surfaces[o] = s;
 	return o;
@@ -172,16 +199,19 @@ uint32_t DD_CreateSurface()
 	uint32_t flags = rd32(d + 4), caps = rd32(d + 104);
 	uint32_t o;
 	if (caps & DDSCAPS_PRIMARYSURFACE) {
-		o = primary = new_surface(mode_w, mode_h, caps | DDSCAPS_VISIBLE | DDSCAPS_FRONTBUFFER | DDSCAPS_VIDEOMEMORY);
+		o = primary = new_surface(mode_w, mode_h, caps | DDSCAPS_VISIBLE | DDSCAPS_FRONTBUFFER | DDSCAPS_VIDEOMEMORY, mode_bpp);
 		if ((flags & DDSD_BACKBUFFERCOUNT) && rd32(d + 20)) {
-			surfaces[o].back = new_surface(mode_w, mode_h, DDSCAPS_BACKBUFFER | DDSCAPS_FLIP | DDSCAPS_VIDEOMEMORY);
+			surfaces[o].back = new_surface(mode_w, mode_h, DDSCAPS_BACKBUFFER | DDSCAPS_FLIP | DDSCAPS_VIDEOMEMORY, mode_bpp);
 		}
 	}
 	else {
 		uint32_t w = flags & DDSD_WIDTH ? rd32(d + 12) : mode_w, h = flags & DDSD_HEIGHT ? rd32(d + 8) : mode_h;
-		o = new_surface(w, h, caps | (caps & DDSCAPS_SYSTEMMEMORY ? 0 : DDSCAPS_VIDEOMEMORY));
+		/* the display's depth, unless the program asks for another */
+		uint32_t bpp = flags & DDSD_PIXELFORMAT ? rd32(d + 72 + 12) : mode_bpp;
+		if (bpp != 8 && bpp != 16) bpp = mode_bpp;
+		o = new_surface(w, h, caps | (caps & DDSCAPS_SYSTEMMEMORY ? 0 : DDSCAPS_VIDEOMEMORY), bpp);
 	}
-	if (wc_trace) fprintf(stderr, " [surface %x: %ux%u, caps %x, bits at %x]", o, surfaces[o].w, surfaces[o].h, surfaces[o].caps, surfaces[o].bits);
+	if (wc_trace) fprintf(stderr, " [surface %x: %ux%ux%u, caps %x, bits at %x]", o, surfaces[o].w, surfaces[o].h, surfaces[o].bpp, surfaces[o].caps, surfaces[o].bits);
 	wr32(out, o);
 	return DD_OK;
 }
@@ -220,21 +250,21 @@ uint32_t DD_GetCaps()
 
 uint32_t DD_GetDisplayMode()
 {
-	surface s{ mode_w, mode_h, mode_w, 0, 0 };
+	surface s{ mode_w, mode_h, mode_w * mode_bpp / 8, 0, 0, mode_bpp };
 	put_desc(arg(1), s);
 	wr32(arg(1) + 4, DDSD_HEIGHT | DDSD_WIDTH | DDSD_PITCH | DDSD_PIXELFORMAT);
 	return DD_OK;
 }
 
-/* The modes there are: 640x480 and 320x200, 8 bits */
+/* The modes there are: 640x480 and 320x200, 8 and 16 bits */
 uint32_t DD_EnumDisplayModes()
 {
 	uint32_t context = arg(3), callback = arg(4);
-	static const uint32_t modes[][2] = { { 320, 200 }, { 640, 480 } };
+	static const uint32_t modes[][3] = { { 320, 200, 8 }, { 640, 480, 8 }, { 320, 200, 16 }, { 640, 480, 16 } };
 	uint32_t d = heap_alloc(108);
 	for (const auto &m : modes) {
 		wr32(d, 108);
-		surface s{ m[0], m[1], m[0], 0, 0 };
+		surface s{ m[0], m[1], m[0] * m[2] / 8, 0, 0, m[2] };
 		put_desc(d, s);
 		wr32(d + 4, DDSD_HEIGHT | DDSD_WIDTH | DDSD_PITCH | DDSD_PIXELFORMAT);
 		if (!win_call(callback, { d, context })) break;
@@ -278,7 +308,7 @@ uint32_t S_Lock()
 	if (!s) return DDERR_INVALIDPARAMS;
 	uint32_t rect = arg(1), d = arg(2);
 	put_desc(d, *s);
-	if (rect) wr32(d + 36, s->bits + rd32(rect + 4) * s->pitch + rd32(rect));
+	if (rect) wr32(d + 36, s->bits + rd32(rect + 4) * s->pitch + rd32(rect) * (s->bpp / 8));
 	return DD_OK;
 }
 
@@ -311,23 +341,41 @@ void get_rect(uint32_t r, const surface &s, int32_t *x0, int32_t *y0, int32_t *x
 	}
 }
 
+/* A pixel of a surface (an index or a 16-bit value) */
+uint32_t get_px(const surface &s, uint32_t x, uint32_t y)
+{
+	uint32_t a = s.bits + y * s.pitch;
+	return s.bpp == 16 ? (uint32_t)M[a + 2 * x] | (uint32_t)M[a + 2 * x + 1] << 8 : M[a + x];
+}
+void put_px(surface &s, uint32_t x, uint32_t y, uint32_t v)
+{
+	uint32_t a = s.bits + y * s.pitch;
+	if (s.bpp == 16) {
+		M[a + 2 * x] = (uint8_t)v;
+		M[a + 2 * x + 1] = (uint8_t)(v >> 8);
+	}
+	else {
+		M[a + x] = (uint8_t)v;
+	}
+}
+
 void blit(surface &d, int32_t dx0, int32_t dy0, int32_t dx1, int32_t dy1, const surface &s, int32_t sx0, int32_t sy0,
 	int32_t sx1, int32_t sy1, bool keyed)
 {
 	int32_t dw = dx1 - dx0, dh = dy1 - dy0, sw = sx1 - sx0, sh = sy1 - sy0;
 	if (dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0) return;
-	std::vector<uint8_t> row((size_t)dw);
+	std::vector<uint32_t> row((size_t)dw);
 	for (int32_t y = 0; y < dh; y++) {
 		int32_t ty = dy0 + y, fy = sy0 + (int32_t)((int64_t)y * sh / dh);
 		if (ty < 0 || ty >= (int32_t)d.h || fy < 0 || fy >= (int32_t)s.h) continue;
 		for (int32_t x = 0; x < dw; x++) {
 			int32_t fx = sx0 + (int32_t)((int64_t)x * sw / dw);
-			row[(size_t)x] = fx >= 0 && fx < (int32_t)s.w ? M[s.bits + (uint32_t)fy * s.pitch + (uint32_t)fx] : 0;
+			row[(size_t)x] = fx >= 0 && fx < (int32_t)s.w ? get_px(s, (uint32_t)fx, (uint32_t)fy) : 0;
 		}
 		for (int32_t x = 0; x < dw; x++) {
 			int32_t tx = dx0 + x;
 			if (tx < 0 || tx >= (int32_t)d.w || (keyed && row[(size_t)x] == s.src_key)) continue;
-			M[d.bits + (uint32_t)ty * d.pitch + (uint32_t)tx] = row[(size_t)x];
+			put_px(d, (uint32_t)tx, (uint32_t)ty, row[(size_t)x]);
 		}
 	}
 }
@@ -340,9 +388,9 @@ uint32_t S_Blt()
 	int32_t x0, y0, x1, y1;
 	get_rect(arg(1), *d, &x0, &y0, &x1, &y1);
 	if (flags & DDBLT_COLORFILL) {
-		uint8_t c = (uint8_t)rd32(fx + 80);
+		uint32_t c = rd32(fx + 80);
 		for (int32_t y = std::max(y0, 0); y < std::min(y1, (int32_t)d->h); y++) {
-			for (int32_t x = std::max(x0, 0); x < std::min(x1, (int32_t)d->w); x++) M[d->bits + (uint32_t)y * d->pitch + (uint32_t)x] = c;
+			for (int32_t x = std::max(x0, 0); x < std::min(x1, (int32_t)d->w); x++) put_px(*d, (uint32_t)x, (uint32_t)y, c);
 		}
 	}
 	else if (surface *s = get_surface(src)) {
@@ -386,7 +434,8 @@ uint32_t S_GetCaps()
 
 uint32_t S_GetPixelFormat()
 {
-	put_pixel_format(arg(1));
+	surface *s = get_surface(arg(0));
+	put_pixel_format(arg(1), s ? s->bpp : mode_bpp);
 	return DD_OK;
 }
 
@@ -528,23 +577,22 @@ void ddraw_clear(void)
 	present();
 }
 
-/* A picture drawn with GDI (StretchDIBits: the windowed mode) as the frame the host shows: 8-bit
- * rows (top-down here) and their palette (256 x RGB) */
-void ddraw_show(const uint8_t *rows, uint32_t stride, int w, int h, const uint8_t rgb[256 * 3])
+/* A picture drawn with GDI (StretchDIBits: the windowed mode) as the frame the host shows: ARGB
+ * rows, top-down */
+void ddraw_show(const uint32_t *rows, int w, int h)
 {
 	std::lock_guard<std::mutex> g(frame_lock);
 	frame_w = std::min(w, 640);
 	frame_h = std::min(h, 480);
-	for (int y = 0; y < frame_h; y++) memcpy(frame + y * frame_w, rows + (size_t)y * stride, (size_t)frame_w);
-	memcpy(frame_palette, rgb, sizeof frame_palette);
+	for (int y = 0; y < frame_h; y++) memcpy(frame + y * frame_w, rows + (size_t)y * w, 4 * (size_t)frame_w);
 	frame_count++;
 }
 
-uint64_t ddraw_frame(uint8_t *pixels, uint8_t palette[256 * 3], int *w, int *h)
+/* The frame (ARGB, alpha 0: transparent) for the host, w x h of it */
+uint64_t ddraw_frame(uint32_t *pixels, int *w, int *h)
 {
 	std::lock_guard<std::mutex> g(frame_lock);
-	memcpy(pixels, frame, (size_t)frame_w * frame_h);
-	memcpy(palette, frame_palette, sizeof frame_palette);
+	memcpy(pixels, frame, 4 * (size_t)frame_w * frame_h);
 	*w = frame_w;
 	*h = frame_h;
 	return frame_count;

@@ -93,16 +93,28 @@ movie folders linked): it writes `WC4.CFG` and saves there.
   top-left (55,165) "Test Movie", right (585,325) "Main Install Menu" (from the first screen, that
   button quits). The install menu ("Install and Configuration": game directory C:\, Direct Sound,
   the video choices, control type) starts the game with "IV" (320,330), which writes `WC4.CFG`.
-- **16 bits isn't supported yet**: with 16-bit gameflow the game creates a 16-bit DIB section and
-  asks `SetDisplayMode(640, 480, 16)`, which the runtime refuses ("Full screen mode
-  initialization failed"). With 8 bits it runs. Script for 8 bits (mouse in 640x480):
+- 16 bits (GOG's default for gameflow and movies): the game asks `SetDisplayMode(640, 480, 16)`,
+  makes a 16-bit primary with a back buffer (the 320x240 off-screen surface only in 8 bits) and a
+  16-bit DIB section. DirectDraw offers RGB565 (DDPF_RGB, masks F800h/07E0h/001Fh), which the game
+  takes: the Duty Roster looks the same as in 8 bits. Refused (as wc3w's runtime did), the game
+  stopped with "Full screen mode initialization failed". Default settings, from GOG's `WC4.CFG`:
+  `8000:@55.325,8500:+lmb,8650:-lmb,20000:@585.325,20500:+lmb,20650:-lmb,26000:@320.330,
+  26500:+lmb,26650:-lmb` (speed test, install menu, IV), `36000:esc` skips the intro to the first
+  mission's objectives ("Fly to the Orlando Depot with Maniac"), a click accepts them: the Virtual
+  Combat Mode flight. For 8 bits instead (mouse in 640x480):
   `8000:@55.325,8500:+lmb,8650:-lmb,20000:@154.327,20500:+lmb,20650:-lmb,21500:@322.224,
   22000:+lmb,22150:-lmb,24000:@585.325,24500:+lmb,24650:-lmb,30000:@320.330,30500:+lmb,
   30650:-lmb` (speed test, gameflow 8 bit, movies 8 bit, install menu, IV). Keep the `WC4.CFG`
   it writes to start the game directly next time.
-- Before a movie the game shows windowed GDI pictures on errors: it drops DirectDraw, draws its
-  640x480x8 DIB section with `StretchDIBits` (DIB_RGB_COLORS, its palette selected) and shows the
-  message box.
+- Before a message box (errors) the game goes windowed: it drops DirectDraw and draws its DIB
+  section with `StretchDIBits` (8 bits: DIB_RGB_COLORS, its palette selected; 16 bits: BI_RGB
+  5-5-5 or BI_BITFIELDS masks, both handled).
+- The frame the host gets is ARGB (`ddraw_frame`), converted from the 8-bit primary and its palette
+  or from RGB565; alpha 0 marks the program's colour 0 (index 0, or the 16-bit value 0), which shows
+  an HD movie under the game's picture (the choice text). Screenshots are RGB PNGs.
+- The game writes `00000102.WSG` (an autosave after the simulator) and `SFOSAVED.DAT` into the
+  folder: a copy of a used scratch folder starts at the Duty Roster, without the intro. Make test
+  folders from the original files.
 - Movies: the movie handler opens the scene's AVI first (475767h, `49AA80h` file load); without it
   "Movie not found" and `TESTMOVI.AVI`, then "Application files could not be found on the local
   hard drive or on any CD ROM drive" and the exit. The patch jumps over that check (475721h to
@@ -128,19 +140,16 @@ returns through the shadow stack (`fixes.cpp`, `jump`).
 
 ## Not done / next
 
-1. 16-bit DirectDraw (640x480x16 primary and surfaces, RGB565 or 555 to the host) and 16-bit DIB
-   sections with StretchDIBits: GOG's default gameflow and movie settings, the patch's "16bit
-   movies" paths.
-2. The rest of the patch's WC4W.EXE fixes (`Mod_GeneralFixes.cpp`'s `#else` branch): the DATA
+1. The rest of the patch's WC4W.EXE fixes (`Mod_GeneralFixes.cpp`'s `#else` branch): the DATA
    folder lookup (49AB03h), the integer math replacements (49D73Ch...: "crashes when imul/idiv
    were overflowing"), the long pause after autopilot (487E31h), more memory (4AD0B2h), more
    watchers (4A14B5h), the texture sampler crash fix; in-flight HD movies (424722h, 424A84h,
    441AFEh), subtitles, choice-text colours.
-3. Playing further: Duty Roster, gameflow, missions; `npm run discover` when code is missing.
-4. `src/tre.ts` reads WC3's TREs (version 0); WC4's are version 1 (header "XTRE", 1, then the hash
+2. Playing further: Duty Roster, gameflow, missions; `npm run discover` when code is missing.
+3. `src/tre.ts` reads WC3's TREs (version 0); WC4's are version 1 (header "XTRE", 1, then the hash
    table (255 slots of hash, entry offset; empty slots 0, FFFFFFFFh), entries of offset and size,
    data): it lists them but the names (hashes) aren't checked yet.
-5. Whether `wc4dvd.exe` (what GOG actually runs) should be the target instead: same game, a later
+4. Whether `wc4dvd.exe` (what GOG actually runs) should be the target instead: same game, a later
    build, MPEG-2 movies through `mpeg2.dll` (to be replaced like Play_Movie), no relocations.
 
 ## Debugging
