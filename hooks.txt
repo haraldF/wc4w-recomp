@@ -1,0 +1,3 @@
+# Addresses where the runtime may take over (runtime/hooks: wc_hook), before the original code runs.
+483ad0	# Play_Movie: HD movies instead (movie.cpp)
+475721	# the movie handler's AVI check: skipped, the scenes are MP4 files (fixes.cpp)

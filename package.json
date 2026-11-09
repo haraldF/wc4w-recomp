@@ -1,0 +1,23 @@
+{
+  "name": "wc4w-recomp",
+  "version": "0.1.0",
+  "private": true,
+  "license": "BSD-2-Clause",
+  "description": "Statically recompile Wing Commander IV's Windows version (WC4W.EXE, 30th Anniversary Edition) to C++ with Ghidra",
+  "type": "module",
+  "scripts": {
+    "unpack": "node src/cli.ts unpack",
+    "imports": "node src/cli.ts imports",
+    "decompile": "node src/cli.ts decompile",
+    "recomp": "node src/cli.ts recomp",
+    "build": "node src/cli.ts build",
+    "discover": "node src/cli.ts discover",
+    "play": "node src/cli.ts play",
+    "tre": "node src/tre.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^5.9.3"
+  }
+}
