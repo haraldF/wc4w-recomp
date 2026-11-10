@@ -108,7 +108,19 @@ uint64_t x87_fabs(uint64_t a, int s) { return x87_fbits(fabs(x87_fval(a, s)), s)
 uint64_t x87_fsqrt(uint64_t a, int s) { return x87_fbits(sqrt(x87_fval(a, s)), s); }
 uint64_t x87_fceil(uint64_t a, int s) { return x87_fbits(ceil(x87_fval(a, s)), s); }
 uint64_t x87_ffloor(uint64_t a, int s) { return x87_fbits(floor(x87_fval(a, s)), s); }
-uint64_t x87_fround(uint64_t a, int s) { return x87_fbits(nearbyint(x87_fval(a, s)), s); }
+/* FIST, FISTP and FRNDINT round as the control word's RC (bits 10-11) says: the C library's _ftol
+ * (4AF33Bh) sets 11b, chop, so that (int)f truncates. */
+uint64_t x87_fround(uint64_t a, int s)
+{
+	double d = x87_fval(a, s);
+	switch ((rd(R_FPCW, 2) >> 10) & 3) {
+	case 0: d = nearbyint(d); break; /* to nearest, even (the host's default) */
+	case 1: d = floor(d); break;
+	case 2: d = ceil(d); break;
+	default: d = trunc(d); break;
+	}
+	return x87_fbits(d, s);
+}
 uint64_t x87_fnan(uint64_t a, int s) { return std::isnan(x87_fval(a, s)); }
 uint64_t x87_f2xm1(uint64_t a, int s) { return x87_fbits(exp2(x87_fval(a, s)) - 1, s); }
 uint64_t x87_fscale(uint64_t a, uint64_t b, int s) { return x87_fbits(ldexp(x87_fval(a, s), (int)trunc(x87_fval(b, s))), s); }
