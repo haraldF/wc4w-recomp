@@ -13,7 +13,8 @@ Split off from wc3w-recomp (`../wc3w-recomp`, Wing Commander III's Windows versi
 playable): its CLAUDE.md has the background on the one-image layout, the generator (p-code to C++,
 the shadow return stack, x87, patched constants), the Win32/DirectX runtime, threads, sound, the
 joystick and the HD movies. Its own background (the DOS extender, the SDL host) is in
-`../wc3-recomp/CLAUDE.md`. Nothing is shared at build time; carry fixes across by hand. Only what
+`../wc3-recomp/CLAUDE.md`. Nothing is shared at build time; carry fixes across by hand
+(`WC3W-DIFFERENCES.md` lists what differs and what is still to carry back). Only what
 is verified for WC4 is recorded here.
 
 Never commit game files or anything derived from their bytes: `WC4W.EXE`, the DLLs, the `.TRE` and
@@ -38,7 +39,7 @@ movie folders linked): it writes `WC4.CFG` and saves there.
   `Language`, `MOVIES1`-`6`, `Music1`/`MUSIC2`-`4`, `Missions`, `Objects`, `SPECIAL1`-`6`,
   `Wc4misc`), `Globals.iff`, `Wc4lang.iff` (English, German, French), `Wc4.cds` (which TREs each
   of the 6 CDs has, as `WC3.CON` did), `WC4.CFG` (137 bytes, the configuration: GOG's makes the
-  game run its setup), `WSG_NDX.WSG`, `SFOSAVED.DAT`. Movies: `Master_FMVs_Upscaled/` and
+  game run its setup), `WSG_NDX.WSG`, `SFOSAVED.DAT`. Without `WC4.CFG` the game runs its setup too (`npm run smoke`). Movies: `Master_FMVs_Upscaled/` and
   `Master_FMVs_Source/` (`SC_0010A.mp4`..., upper case, with `subtitles/*.srt`), `vob/` (the DVD's,
   with a `movies.ini` renaming a few branches). `ddraw.dll`/`dwrap.dll` + `wc4w_en*.ini`: the
   enhancement patch; `libvlc*.dll`, `plugins/`: VLC for it; `dxmci.dll`, `mpeg2.dll`, AC3Filter,
@@ -62,13 +63,16 @@ movie folders linked): it writes `WC4.CFG` and saves there.
   90000000h to 200000h as there. The image is 200000h-4F0000h; VirtualAlloc's regions start at
   500000h as in wc3w-recomp.
 - Imports: KERNEL32 61 (+ XanLib's 15), USER32 30 (+1), GDI32 8, ADVAPI32 3 (`RegOpenKeyExA`,
-  `RegQueryValueExA`, `RegCloseKey`: new; stubs that find nothing, not called so far), DDRAW 1
+  `RegQueryValueExA`, `RegCloseKey`: new; stubs that find nothing, not called so far; 40F8D0h
+  uses them with string resources 12-14 to look up the joystick's name under HKEY_LOCAL_MACHINE), DDRAW 1
   (`DirectDrawCreate` straight from `DDRAW.dll`: no renamed import, unlike WC3W's `WC3EN.dll`),
   WINMM 2 joystick + XanLib's 12 waveOut, XanLib 40 (its C++ classes, including `XDMOVIE`).
   121 Windows functions. Missing from wc3w's runtime and added: `GetCurrentDirectoryA` (C:\),
   `GetFileTime`/`SetFileTime` (no times kept), the registry, `StretchDIBits`. Not implemented yet
   (not called so far): `RtlUnwind`, `RaiseException`, `UnhandledExceptionFilter`,
-  `ReadConsoleInputA`. Loaded at run time: `dsound.dll` (`DirectSoundCreate`, as WC3W), and the C
+  `ReadConsoleInputA`; a call stops the program with "wc: unimplemented Windows function
+  KERNEL32.DLL!..." (exit 6). The first three only come after an exception, which the runtime
+  never raises. Loaded at run time: `dsound.dll` (`DirectSoundCreate`, as WC3W), and the C
   library asks `GetProcAddress(kernel32, "GetProcessAffinityMask")` (not there: fine).
 
 ## Ghidra and the generator
@@ -80,6 +84,31 @@ movie folders linked): it writes `WC4.CFG` and saves there.
   (48F000h-493FFFh; the game makes 48D864h-494F92h writable with VirtualProtect).
 - 6 "unhandled CALLOTHER segment" ops: data decoded as code (`[BX+SI]`, 16-bit addressing), in
   fragments that never run.
+- `npm run decompile` and `npm run recomp` record what they were made from (`out/ghidra/inputs.json`,
+  `out/recomp/inputs.json`: SHA-256 of `image.bin`, `labels.txt`, the scripts, `entries.txt`,
+  `code-pointers.txt`, `hooks.txt`, and Ghidra's version). `recomp` skips the generator when nothing
+  changed (`--force`) and refuses a Ghidra project made from another image or by another Ghidra;
+  `build` refuses when the generator's inputs changed (a new hook needs the generated `wc_hook` call).
+- analyzeHeadless exits 0 even when a script throws, so the generator writes `out/recomp/summary.json`
+  last (counts, the hooks that aren't at an instruction) and `recomp` fails without it, on a hook
+  that was never placed, or on more unhandled p-code ops than the 6 known (`UNHANDLED_OPS`).
+- Fragments follow only flows into the image: data decoded as code "jumps" anywhere (the log's
+  "cannot decode an instruction at 0c485683").
+- x87: the ST registers carry doubles, not 80-bit values (the game sets 53-bit precision, 27Fh, so
+  that matches; the control word's precision bits are ignored). `FIST`/`FISTP`/`FRNDINT` (p-code
+  `round` then `trunc`) round as the control word's RC bits say: the C library's `_ftol` (4AF33Bh)
+  sets chop, so `(int)f` truncates. Before that was honoured it rounded to nearest. NaN or a value
+  too large for the integer stores the integer indefinite (80000000h), as x86 does.
+- Division: every `INT_DIV`/`INT_SDIV` comes from `DIV`/`IDIV`, whose quotient must fit in half the
+  dividend (EDX:EAX: 32 bits). x86 faults (#DE) when it doesn't: the "imul/idiv overflowing"
+  crashes the patch works around. Here the quotient is truncated and the instruction reported once
+  ("wc: divide overflow at"); `WC_STRICT=1` stops there instead. `INT64_MIN / -1` wraps. The game's
+  three fixed-point helpers where that happened are replaced as the patch does (Hooks below), so
+  the smoke test's runs report none.
+- Memory outside 10000h-MEM_SIZE (Windows would fault) wraps into memory and is reported once for
+  each instruction ("wc: read of 4 bytes at ..., outside memory"); `WC_STRICT=1` stops there. A bad
+  pointer handed to a Windows function (`guest_ptr` in `win.h`: every block the runtime reads or
+  writes directly) always stops the program: there is nothing sensible to wrap to.
 
 ## How it runs (headless, all verified)
 
@@ -129,6 +158,21 @@ movie folders linked): it writes `WC4.CFG` and saves there.
   XanLib), targeting and guns. After it the gameflow's "Duty Roster" (load/save) screen. 100 s of
   that ran without a stop: `WC_KEYS=5000:esc,20000:t,25000:+space,27000:-space,30000:enter,...`.
 
+## The data archives (src/tre.ts)
+
+- WC4's TREs are XTRE version 1 (WC3's 0): the same header ("XTRE", version, offsets of the hash
+  table, the names table, the entries, the data) and entries (offset, size; bit 31 packed, bit 30
+  RefPack, else LZW; WC4W.EXE's decoders 49D310h, 49D569h). Reader 49B380h, lookup 49B890h.
+- The name hash differs (49B980h picks by version): version 1 starts with the first character times
+  256, then `h += (h >> 4) * c + i` for each further character (i from 0). The hash table's slots
+  (2^n - 1) are a binary tree in an array: from slot k, larger hashes at 2k, smaller at 2k + 1.
+  A slot points to the entry, or, where paths collide, into the names table (length byte, path,
+  entry offset), which the game searches from there: Language.tre's
+  `..\..\DATA\LANGUAGE\SUBTITLE\0270.IFF` and `0720.IFF` share 610C0BBCh. `readTre` checks that
+  every slot leads to an entry and every stored path hashes to a colliding slot (true for all 22
+  archives); `--names file` names entries from guessed paths.
+- Language.tre and Missions.tre each have one `NAV` entry no slot points to (index 1845, 99).
+
 ## Hooks (hooks.txt)
 
 As in wc3w-recomp: the generated code first calls `wc_hook(addr)`; a handler returning true makes
@@ -137,30 +181,80 @@ enters the recompiled code there with `run_code(to)` and returns true: the funct
 returns through the shadow stack (`fixes.cpp`, `jump`).
 - 483AD0h: Play_Movie, the HD movies (`movie.cpp`).
 - 475721h: the movie handler's AVI check, skipped (`fixes.cpp`).
+- 49D73Ch, 49D74Fh, 49D75Eh: `a * 256 / b`, `a * b / 256`, `a * b / c` (cdecl, 32-bit arguments,
+  IMUL then IDIV on EDX:EAX): 64-bit arithmetic cut to 32 bits, the patch's "replacement integer
+  math" (`fixes.cpp`). A zero divisor still stops the program.
+- The two lists must agree, and both sides check: `recomp` fails on an address in `hooks.txt` that
+  isn't an instruction; the runtime stops at the start when a `hook_register` address has no
+  generated `wc_hook` call (`wc_hook_addr` in `wc_dispatch.cpp`), and says so when `hooks.txt` has an
+  address without a handler.
 
 ## Not done / next
 
 1. The rest of the patch's WC4W.EXE fixes (`Mod_GeneralFixes.cpp`'s `#else` branch): the DATA
-   folder lookup (49AB03h), the integer math replacements (49D73Ch...: "crashes when imul/idiv
-   were overflowing"), the long pause after autopilot (487E31h), more memory (4AD0B2h), more
-   watchers (4A14B5h), the texture sampler crash fix; in-flight HD movies (424722h, 424A84h,
-   441AFEh), subtitles, choice-text colours.
+   folder lookup (49AB03h), the long pause after autopilot (487E31h: a constant in the code, so a
+   hook, not a poke), more memory (4AD0B2h), more watchers (4A14B5h), the texture sampler crash
+   fix; in-flight HD movies (424722h, 424A84h, 441AFEh), subtitles, choice-text colours.
 2. Playing further: Duty Roster, gameflow, missions; `npm run discover` when code is missing.
-3. `src/tre.ts` reads WC3's TREs (version 0); WC4's are version 1 (header "XTRE", 1, then the hash
-   table (255 slots of hash, entry offset; empty slots 0, FFFFFFFFh), entries of offset and size,
-   data): it lists them but the names (hashes) aren't checked yet.
-4. Whether `wc4dvd.exe` (what GOG actually runs) should be the target instead: same game, a later
+   **The Duty Roster takes no input in scripted runs**: with a save in the folder (`00000102.WSG`,
+   written when the simulator flight starts) the game starts there, in 16 bits, drawing with
+   `FlipToGDISurface` + `StretchDIBits` every frame; clicks on a row or on any of its four buttons,
+   Enter and Esc reach the window procedure (WM_LBUTTONDOWN/UP, WM_KEYDOWN, WM_COMMAND from the
+   accelerator) and only the pointer moves. Not the WM_MOUSEMOVE after each `SetCursorPos` (tried
+   without). Whether it works in the window is not checked.
+3. Whether `wc4dvd.exe` (what GOG actually runs) should be the target instead: same game, a later
    build, MPEG-2 movies through `mpeg2.dll` (to be replaced like Play_Movie), no relocations.
 
 ## Debugging
 
-As in wc3w-recomp: `WC_TRACE=1` (Windows calls), `WC_TRACE=2` with `WC_TRACE_AT`, `WC_WATCH`,
-`WC_HEADLESS=1`, `WC_WAV`, `WC_SCREENSHOT=file.png` after `WC_SCREENSHOT_AT` seconds (the run ends
-there), `WC_DUMP`, `WC_KEYS=ms:key,...` (`@x.y` moves the pointer, `+lmb`/`-lmb`).
+As in wc3w-recomp: `WC_TRACE=1` (Windows calls), `WC_TRACE=2` (every instruction) with
+`WC_TRACE_AT=addr,lo-hi,...` (only those, with ST0-ST2 and the x87 control word), `WC_WATCH=addr`
+(writes), `WC_POKE=addr:byte,...` (patch memory before the start), `WC_HEADLESS=1`, `WC_WAV`,
+`WC_SCREENSHOT=file.png` after `WC_SCREENSHOT_AT` seconds (the run ends there), `WC_DUMP=file`
+(memory on an error), `WC_KEYS=ms:key,...` (`@x.y` moves the pointer, `+lmb`/`-lmb`), `WC_VIRTUAL_TIME=1` (below). New:
+`WC_STRICT=1` stops where Windows would fault: memory outside 10000h-MEM_SIZE (otherwise wrapped),
+a `DIV`/`IDIV` quotient too large. Movies: `WC_HD_MOVIES=0` off, or another folder than
+`Master_FMVs_Upscaled` (`Master_FMVs_Source`, `vob`). Joystick: `WC_STICK_AXES=x,y,twist,throttle`
+(SDL axis numbers, `-n` reversed), `WC_JOYSTICK=1` a virtual one when there is none.
+- `WC_VIRTUAL_TIME=1` (headless only; `clock.cpp`, `host.h`): one virtual clock for everything
+  (`QueryPerformanceCounter`, message times, `Sleep` and the thread scheduler, the vertical blank,
+  the movies, `WC_KEYS`, `WC_SCREENSHOT_AT`). It advances with the instructions executed
+  (`WC_VIRTUAL_MIPS`, default 200 million a second; this Mac runs about 540 in flight) and every
+  wait moves it on at once. The host's work (script, mixer, movie frames, screenshot) then happens
+  on the program's thread as the clock moves (`host_tick`); real joysticks are ignored; the movie
+  player waits for its decoder (`wait_ahead`). A run repeats exactly: the same instruction count
+  and a byte-identical screenshot three times over, through 9 s of the intro movie. The game mostly
+  spins (it polls `QueryPerformanceCounter`), so a run takes its instructions' time: 80 virtual
+  seconds in 24 s. Don't trace such a run for long: the polling loop prints a line per call.
+- `npm run smoke [scenario...]`: headless with virtual time (`--realtime`: the real clock), in
+  `out/smoke/game` (a fresh copy without `WC4.CFG`, so the game runs its setup, and without saves),
+  the scenarios of `SCENARIOS` in `cli.ts` one after the other: `flight` (the setup, the intro
+  skipped, the simulator flight with a target, afterburner, guns and a missile: 80 s) and `roster`
+  (the folder now has the flight's save: the Duty Roster, 8 s). Each fails on a stop, an error, a
+  message from the runtime (but a joystick's and the warnings: divide overflow, wrapped memory), no
+  `WC4.CFG`, or a picture that isn't the scenario's: the display mode's depth (space flight is 8
+  bits, setup too; gameflow 16) and a minimum of colours, both from the runtime's "wc: screenshot
+  saved to ... (640x480, 8-bit mode, n instructions)" and the PNG. Both take 31 s. Every
+  `smoke`/`discover`/`play` run's stderr is in `out/logs/`.
+- `npm test`: `node --test` on `test/*.test.ts`, no game files needed: the archive reader (LZW with
+  an encoder of its own, RefPack, both hashes, archives made in memory), the PE reader (a module
+  made in memory), and the generated code's helpers (`test/rt_test.cpp` with `runtime/cpu.cpp`,
+  built with `c++`: DIV/IDIV, x87 rounding and conversions, 80-bit values, flags, memory, the
+  shadow stack).
+- `npm run imports` and `build` list the imported Windows functions without an implementation
+  (`API(...)` in `runtime/*.cpp`): the 4 above.
+- `npm run drift`: the lines that differ from `../wc3w-recomp` (`--other`), by shared file.
+- HD movies, headless: the host must keep calling `movie_frame` (it takes the frames due off the
+  decoder's queue; a movie ends when that is empty). Before it did, a headless movie never ended
+  by itself and its decoded 1080p frames piled up.
+- "Calibrate Joystick" (the options) calls the game's joystick setup (412E50h) with 1: it waits for
+  the buttons to be released, reads the stick 200 times, takes the middle of what it read as the
+  centre and a dead zone from the spread. No prompt, nothing drawn: it looks as if nothing happens.
 
 ## Conventions
 
-As in wc3w-recomp: TypeScript run directly by Node (≥ 23.6), ESM, `npm run typecheck`; Java Ghidra
+As in wc3w-recomp: TypeScript run directly by Node (≥ 24.2: `import.meta.main`), ESM, `npm run
+typecheck`, `npm test`; Java Ghidra
 scripts in `ghidra_scripts/`; C++23 runtime, tab-indented, short comments; the standard library
 rather than POSIX. Ghidra 12.2 (Homebrew). Commit messages end with
 "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>".

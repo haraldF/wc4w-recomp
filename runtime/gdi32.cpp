@@ -31,7 +31,7 @@ API(GDI32, CreatePalette, 1)
 {
 	uint32_t lp = arg(0), n = (uint32_t)mrd32(lp + 2, 2);
 	uint32_t h = heap_alloc(4 + 4 * n);
-	memcpy(M + h, M + lp, 4 + 4 * n);
+	memcpy(guest_ptr(h, 4 + 4 * n), guest_ptr(lp, 4 + 4 * n), 4 + 4 * n);
 	return h;
 }
 
@@ -82,6 +82,7 @@ API(GDI32, StretchDIBits, 13)
 	uint32_t table = bi + header, rows = (uint32_t)(h < 0 ? -h : h);
 	uint32_t stride = ((uint32_t)w * bpp / 8 + 3) & ~3u;
 	std::vector<uint32_t> out((size_t)w * rows);
+	const uint8_t *pixels = guest_ptr(bits, (uint64_t)rows * stride);
 	if (bpp == 8) {
 		uint32_t pal[256] = {}, n = used ? std::min(used, 256u) : 256u;
 		for (uint32_t i = 0; i < n; i++) {
@@ -90,16 +91,18 @@ API(GDI32, StretchDIBits, 13)
 				uint32_t k = (uint32_t)mrd32(table + 2 * i, 2);
 				if (selected_palette && k < (uint32_t)mrd32(selected_palette + 2, 2)) {
 					uint32_t e = selected_palette + 4 + 4 * k;
-					r = M[e], g = M[e + 1], b = M[e + 2];
+					const uint8_t *q = guest_ptr(e, 4);
+					r = q[0], g = q[1], b = q[2];
 				}
 			}
 			else {
-				r = M[table + 4 * i + 2], g = M[table + 4 * i + 1], b = M[table + 4 * i];
+				const uint8_t *q = guest_ptr(table + 4 * i, 4);
+				r = q[2], g = q[1], b = q[0];
 			}
 			pal[i] = (i ? 0xff000000u : 0) | r << 16 | g << 8 | b;
 		}
 		for (uint32_t y = 0; y < rows; y++) {
-			const uint8_t *src = M + bits + (h < 0 ? y : rows - 1 - y) * stride;
+			const uint8_t *src = pixels + (size_t)(h < 0 ? y : rows - 1 - y) * stride;
 			for (int32_t x = 0; x < w; x++) out[(size_t)y * w + x] = pal[src[x]];
 		}
 	}
@@ -116,7 +119,7 @@ API(GDI32, StretchDIBits, 13)
 			width[c] = __builtin_popcount(m);
 		}
 		for (uint32_t y = 0; y < rows; y++) {
-			const uint8_t *src = M + bits + (h < 0 ? y : rows - 1 - y) * stride;
+			const uint8_t *src = pixels + (size_t)(h < 0 ? y : rows - 1 - y) * stride;
 			for (int32_t x = 0; x < w; x++) {
 				uint32_t p = (uint32_t)src[2 * x] | (uint32_t)src[2 * x + 1] << 8, v = p ? 0xff000000u : 0;
 				for (int c = 0; c < 3; c++) {

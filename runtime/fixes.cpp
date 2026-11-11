@@ -20,8 +20,38 @@ bool jump(uint32_t to)
  * the check is skipped (475721h to 475B09h). */
 bool skip_movie_file_check(void) { return jump(0x475b09); }
 
+/* The game's fixed-point helpers (cdecl, 32-bit arguments) multiply into EDX:EAX and divide it with
+ * IDIV, which faults when the quotient doesn't fit in 32 bits: the patch's "crashes when imul/idiv
+ * were overflowing". As the patch does, they are replaced by 64-bit arithmetic whose result is cut
+ * to 32 bits. A zero divisor stops the program as it did (the patch's faults there too). */
+int64_t arg_s(int i) { return (int32_t)rd32((uint32_t)rd(R_SP, 4) + 4 + 4 * (uint32_t)i); }
+
+/* the function's return: EAX, and the RET (cdecl: the caller pops the arguments) */
+bool returns(int64_t value)
+{
+	wr(R_AX, 4, (uint64_t)value);
+	wr(R_SP, 4, rd(R_SP, 4) + 4);
+	return true;
+}
+
+int64_t divide(int64_t a, int64_t b, uint32_t at)
+{
+	if (!b) cpu_div0(at);
+	return a / b; /* |a| < 2^62: no INT64_MIN / -1 */
+}
+
+bool mul_256_div(void) { return returns(divide(arg_s(0) * 256, arg_s(1), 0x49d73c)); }       /* a * 256 / b */
+bool mul_div_256(void) { return returns((arg_s(0) * arg_s(1)) >> 8); }                        /* a * b / 256 */
+bool mul_div(void) { return returns(divide(arg_s(0) * arg_s(1), arg_s(2), 0x49d75e)); }       /* a * b / c */
+
 struct init {
-	init() { hook_register(0x475721, skip_movie_file_check); }
+	init()
+	{
+		hook_register(0x475721, skip_movie_file_check);
+		hook_register(0x49d73c, mul_256_div);
+		hook_register(0x49d74f, mul_div_256);
+		hook_register(0x49d75e, mul_div);
+	}
 } init_;
 
 } // namespace

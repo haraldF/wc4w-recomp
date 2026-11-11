@@ -4,7 +4,6 @@
  * whose methods run here. What the primary surface shows goes to the host (present(), as ARGB) at
  * each Flip, and when the program writes to the primary itself (Unlock, Blt). */
 #include <algorithm>
-#include <chrono>
 #include <cstdio>
 #include <map>
 #include <mutex>
@@ -144,18 +143,16 @@ uint32_t DD_FlipToGDISurface() { return DD_OK; }
 
 uint32_t DD_WaitForVerticalBlank()
 {
-	using namespace std::chrono;
-	static auto next = steady_clock::now();
-	auto now = steady_clock::now();
-	next = std::max(next + microseconds(16667), now);
-	std::this_thread::sleep_until(next);
+	static uint64_t next; /* 60 a second */
+	next = std::max(next + 16667, clock_us());
+	clock_wait_until(next);
 	win_poll();
 	return DD_OK;
 }
 
 void put_pixel_format(uint32_t pf, uint32_t bpp)
 {
-	memset(M + pf, 0, 32);
+	memset(guest_ptr(pf, 32), 0, 32);
 	wr32(pf, 32);
 	if (bpp == 16) {
 		wr32(pf + 4, 0x40); /* DDPF_RGB: 5-6-5 */
@@ -173,7 +170,7 @@ void put_pixel_format(uint32_t pf, uint32_t bpp)
 void put_desc(uint32_t d, const surface &s)
 {
 	if (wc_trace && rd32(d) != 108) fprintf(stderr, " [DDSURFACEDESC of size %u]", rd32(d));
-	memset(M + d, 0, 108);
+	memset(guest_ptr(d, 108), 0, 108);
 	wr32(d, 108);
 	wr32(d + 4, DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PITCH | DDSD_PIXELFORMAT | DDSD_LPSURFACE);
 	wr32(d + 8, s.h);
@@ -189,6 +186,7 @@ uint32_t new_surface(uint32_t w, uint32_t h, uint32_t caps, uint32_t bpp)
 	uint32_t o = make_object(vt_surface);
 	surface s{ w, h, (w * (bpp / 8) + 3) & ~3u, 0, caps, bpp };
 	s.bits = region_alloc(0, s.pitch * h);
+	if (!s.bits) cpu_fail("no memory for a DirectDraw surface, asked for after instruction", wc_last_ins);
 	surfaces[o] = s;
 	return o;
 }
@@ -221,7 +219,8 @@ uint32_t DD_CreatePalette()
 	uint32_t entries = arg(2), out = arg(3);
 	uint32_t o = make_object(vt_palette);
 	std::vector<uint8_t> &p = palettes[o];
-	p.assign(M + entries, M + entries + 1024);
+	const uint8_t *e = guest_ptr(entries, 1024);
+	p.assign(e, e + 1024);
 	wr32(out, o);
 	return DD_OK;
 }
@@ -239,7 +238,7 @@ uint32_t DD_GetCaps()
 		if (!c) continue;
 		uint32_t size = std::min(rd32(c), 316u); /* DDCAPS: 316 bytes in DirectX 3 */
 		if (wc_trace) fprintf(stderr, " [DDCAPS of size %u]", rd32(c));
-		memset(M + c, 0, size);
+		memset(guest_ptr(c, size), 0, size);
 		wr32(c, size);
 		wr32(c + 4, 0x40 | 0x200); /* DDCAPS_BLT | DDCAPS_PALETTE */
 		wr32(c + 60, 8 * 1024 * 1024 >> 0); /* dwVidMemTotal */
@@ -478,10 +477,11 @@ uint32_t P_SetEntries()
 	auto it = palettes.find(arg(0));
 	if (it == palettes.end()) return DDERR_INVALIDPARAMS;
 	uint32_t start = arg(2), count = std::min(arg(3), 256 - std::min(arg(2), 256u));
-	memcpy(it->second.data() + 4 * start, M + arg(4), 4 * count);
+	const uint8_t *e = guest_ptr(arg(4), 4 * count);
+	memcpy(it->second.data() + 4 * start, e, 4 * count);
 	if (wc_trace) {
 		unsigned sum = 0;
-		for (uint32_t i = 0; i < 4 * count; i++) sum += M[arg(4) + i];
+		for (uint32_t i = 0; i < 4 * count; i++) sum += e[i];
 		fprintf(stderr, " [entries %u..%u, sum %u]", start, start + count - 1, sum);
 	}
 	if (surface *p = get_surface(primary); p && p->palette == arg(0)) present();
@@ -493,7 +493,7 @@ uint32_t P_GetEntries()
 	auto it = palettes.find(arg(0));
 	if (it == palettes.end()) return DDERR_INVALIDPARAMS;
 	uint32_t start = arg(2), count = std::min(arg(3), 256 - std::min(arg(2), 256u));
-	memcpy(M + arg(4), it->second.data() + 4 * start, 4 * count);
+	memcpy(guest_ptr(arg(4), 4 * count), it->second.data() + 4 * start, 4 * count);
 	return DD_OK;
 }
 
@@ -587,6 +587,9 @@ void ddraw_show(const uint32_t *rows, int w, int h)
 	for (int y = 0; y < frame_h; y++) memcpy(frame + y * frame_w, rows + (size_t)y * w, 4 * (size_t)frame_w);
 	frame_count++;
 }
+
+/* The display mode's depth (8 or 16): space flight is 8 bits whatever the settings say */
+uint32_t ddraw_mode_bits(void) { return mode_bpp; }
 
 /* The frame (ARGB, alpha 0: transparent) for the host, w x h of it */
 uint64_t ddraw_frame(uint32_t *pixels, int *w, int *h)

@@ -1,22 +1,36 @@
-// Usage: node src/cli.ts <command> [--game dir] [--out dir] [--seconds n]
+// Usage: node src/cli.ts <command> [--game dir] [--out dir] [--seconds n] [--force] [--realtime] [--other dir]
 //   --game       the Windows version's folder (default ../game4.30/WC4_Enhanced: the 30th Anniversary
 //                Edition's WC4_Enhanced, as GOG's installer has it or extracted with innoextract)
+//   --force      recomp: run the generator even when its inputs haven't changed
 //   unpack       WC4W.EXE and Xanlib.dll mapped as Windows loads them and linked into one image
 //                (out/image.bin, from IMAGE_LO), its modules and imports in out/program.json
 //   imports      unpack, then list what the modules import (the Windows API they need), by DLL
 //   decompile    unpack, import the image into a Ghidra project (out/ghidra) and analyze it
-//   recomp       translate the analyzed program to C++ (out/recomp/) and build out/bin/wc4w
-//   build        only (re)build out/bin/wc4w from out/recomp/ and runtime/ (CMake, in out/build/)
+//   recomp       translate the analyzed program to C++ (out/recomp/) and build out/bin/wc4w; the
+//                generator runs only when its inputs changed (out/recomp/inputs.json)
+//   build        only (re)build out/bin/wc4w from out/recomp/ and runtime/ (CMake, in out/build/);
+//                refused when the generator's inputs (hooks.txt, entries.txt...) changed since
+//   smoke        run the game headless in a fresh copy of the game folder (out/smoke/game, without
+//                WC4.CFG and saves) through the scenarios (all, or those named: "flight"...), from its
+//                setup on; fails on a stop, an error or a picture that isn't the scenario's. With
+//                virtual time (the same run every time, not waiting); --realtime: by the real clock
 //   discover     run out/bin/wc4w headless (each run for --seconds, default 60; WC_* from the
 //                environment); when it reaches code that wasn't recompiled (reached only through
 //                pointers in data), add that entry point to entries.txt, recompile, repeat
 //   play         the same in the window: after each recompile the game starts again
+//   drift        compare the files shared with wc3w-recomp (--other, default ../wc3w-recomp): the
+//                number of lines that differ, by file (WC3W-DIFFERENCES.md explains them)
+// Each run's stderr is kept in out/logs/.
 
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync, copyFileSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
+import { inflateSync } from "node:zlib";
 import { findGhidra, runHeadless } from "./ghidra.ts";
 import { type PE, parsePE, rebase } from "./pe.ts";
 
@@ -27,6 +41,9 @@ const { positionals, values } = parseArgs({
     game: { type: "string", default: path.resolve(root, "../game4.30/WC4_Enhanced") },
     out: { type: "string", default: path.join(root, "out") },
     seconds: { type: "string", default: "60" },
+    force: { type: "boolean", default: false },
+    realtime: { type: "boolean", default: false },
+    other: { type: "string", default: path.resolve(root, "../wc3w-recomp") },
   },
 });
 
@@ -60,7 +77,7 @@ const labelsFile = path.join(out, "labels.txt");
 // decodes those outside Ghidra's functions too: code reached only through pointers (callbacks,
 // tables of functions), which the DOS version had to find by running it.
 const codePointersFile = path.join(out, "code-pointers.txt");
-// Addresses where the runtime may take over (functions it replaces: runtime/hooks.cpp), kept in the repository
+// Addresses where the runtime may take over (runtime/fixes.cpp, movie.cpp: hook_register), kept in the repository
 const hooksFile = path.join(root, "hooks.txt");
 const projectDir = path.join(out, "ghidra");
 const scriptPath = path.join(root, "ghidra_scripts");
@@ -68,6 +85,12 @@ const projectName = "WC4W";
 const recompDir = path.join(out, "recomp");
 const entriesFile = path.join(root, "entries.txt"); // kept in the repository
 const wcExe = path.join(out, "bin", "wc4w");
+const logsDir = path.join(out, "logs");
+// What each step was made from (file: SHA-256), to skip or refuse steps whose inputs changed
+const decompileStamp = path.join(projectDir, "inputs.json");
+const recompStamp = path.join(recompDir, "inputs.json");
+const decompileInputs = (): string[] => [imageFile, labelsFile, path.join(scriptPath, "WcPeSetup.java")];
+const recompInputs = (): string[] => [decompileStamp, path.join(scriptPath, "WcRecomp.java"), entriesFile, codePointersFile, hooksFile];
 const hex = (n: number): string => n.toString(16);
 
 interface Program {
@@ -176,7 +199,7 @@ const ghidraName = (s: string): string => s.replace(/[^A-Za-z0-9_@?$]/g, "_");
 
 /** What each module imports, by DLL. */
 function doImports(): void {
-  const { pes } = doUnpack();
+  const { program, pes } = doUnpack();
   const linked = new Set([...pes].flatMap(([m, pe]) => [m.file.toUpperCase(), (pe.exportName ?? "").toUpperCase()]));
   for (const [m, pe] of pes) {
     console.log(`\n${m.file}:`);
@@ -191,23 +214,128 @@ function doImports(): void {
       console.log(names.sort().map((n) => `    ${n}`).join("\n"));
     }
   }
-  console.log("\nLoadLibrary/GetProcAddress add those found at run time");
+  const missing = unimplemented(program);
+  console.log(`\nnot implemented by the runtime (a call stops the program): ${missing.length ? missing.join(", ") : "none"}`);
+  console.log("LoadLibrary/GetProcAddress add those found at run time");
 }
 
+type Stamp = Record<string, string>;
+/** The files' hashes, and what else the step depends on (the Ghidra version). */
+function stampOf(files: string[], also: Stamp = {}): Stamp {
+  return { ...Object.fromEntries(files.map((f) => [path.relative(root, f),
+    existsSync(f) ? createHash("sha256").update(readFileSync(f)).digest("hex") : "none"])), ...also };
+}
+function readStamp(file: string): Stamp | undefined {
+  return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) as Stamp : undefined;
+}
+/** The files whose hash differs from the stamp's (all of them without a stamp). */
+function changed(stampFile: string, files: string[], also: Stamp = {}): string[] {
+  const old = readStamp(stampFile) ?? {};
+  return Object.entries(stampOf(files, also)).filter(([f, h]) => old[f] !== h).map(([f]) => f);
+}
+/** Stops when a step's inputs changed since the stamp; without a stamp (made before stamps) only warns. */
+function requireStamp(stampFile: string, files: string[], what: string, fix: string, also: Stamp = {}): void {
+  const stale = changed(stampFile, files, also);
+  if (!stale.length) return;
+  if (!existsSync(stampFile)) {
+    console.warn(`warning: no ${path.relative(root, stampFile)}: whether ${what} is current is unknown (${fix} records it)`);
+    return;
+  }
+  throw new Error(`${stale.join(", ")} changed since ${what} was made: ${fix}`);
+}
+
+// p-code the generator has no translation for: 6 "CALLOTHER segment" ops in data decoded as code,
+// in fragments that never run (CLAUDE.md). More means new code it can't translate.
+const UNHANDLED_OPS = 6;
+interface Summary { functions: number; fragments: number; instructions: number; files: number; unhandled: number;
+  hooks: number; missingHooks: string[] }
+
 const doRecomp = async (): Promise<void> => {
+  const inputs = changed(recompStamp, recompInputs());
+  if (!inputs.length && !values.force && existsSync(path.join(recompDir, "wc_dispatch.cpp"))) {
+    console.log("the generated C++ is up to date (--force runs the generator anyway)");
+    await doBuild();
+    return;
+  }
+  const ghidra = findGhidra();
+  requireStamp(decompileStamp, decompileInputs(), "the Ghidra project", "npm run decompile", { ghidra: ghidra.version });
+  const summaryFile = path.join(recompDir, "summary.json");
   mkdirSync(recompDir, { recursive: true });
-  await runHeadless(findGhidra(), [
+  rmSync(recompStamp, { force: true });
+  rmSync(summaryFile, { force: true });
+  await runHeadless(ghidra, [
     projectDir, projectName,
     "-process", path.basename(imageFile), "-noanalysis", "-readOnly",
     "-scriptPath", scriptPath,
     "-postScript", "WcRecomp.java", recompDir, entriesFile, codePointersFile, hooksFile,
   ]);
+  // analyzeHeadless succeeds even when the script throws: the summary, written last, says it finished
+  if (!existsSync(summaryFile)) throw new Error("the generator (WcRecomp.java) didn't finish: see Ghidra's output above");
+  const s = JSON.parse(readFileSync(summaryFile, "utf8")) as Summary;
+  if (s.missingHooks.length) {
+    throw new Error(`hooks.txt: ${s.missingHooks.join(", ")} ${s.missingHooks.length > 1 ? "are" : "is"} not an instruction ` +
+      "of the recompiled code, so the hook would never be called");
+  }
+  if (s.unhandled > UNHANDLED_OPS) {
+    throw new Error(`the generator met ${s.unhandled} p-code ops it can't translate (${UNHANDLED_OPS} are known): ` +
+      'see "unhandled" in out/recomp/seg_*.cpp');
+  }
+  if (s.unhandled < UNHANDLED_OPS) console.log(`note: only ${s.unhandled} unhandled p-code ops now (UNHANDLED_OPS in cli.ts says ${UNHANDLED_OPS})`);
+  writeFileSync(recompStamp, JSON.stringify(stampOf(recompInputs()), null, 1) + "\n");
   await doBuild();
 };
+
+/** How far the files this project shares with wc3w-recomp (--other) have drifted apart: the lines
+ * that differ, by file. Fixes go across by hand; WC3W-DIFFERENCES.md says which and why. */
+function doDrift(): void {
+  const other = path.resolve(values.other);
+  if (!existsSync(other)) throw new Error(`no ${other} (--other: the wc3w-recomp checkout)`);
+  const list = (dir: string, ext: RegExp): string[] => existsSync(path.join(root, dir))
+    ? readdirSync(path.join(root, dir)).filter((f) => ext.test(f)).map((f) => path.join(dir, f)) : [];
+  const files = [...list("runtime", /\.(cpp|h)$/), ...list("ghidra_scripts", /\.java$/), ...list("src", /\.ts$/),
+    ...list("test", /\.(ts|cpp)$/), "CMakeLists.txt", "tsconfig.json"];
+  const rows: [string, string][] = [];
+  for (const f of files) {
+    if (!existsSync(path.join(other, f))) {
+      rows.push(["only here", f]);
+      continue;
+    }
+    const diff = spawnSync("diff", [path.join(other, f), path.join(root, f)], { encoding: "utf8" });
+    if (diff.status !== 0 && diff.status !== 1) throw new Error(`diff failed on ${f}: ${diff.stderr}`);
+    const lines = diff.stdout.split("\n").filter((l) => /^[<>]/.test(l)).length;
+    rows.push([lines ? `${lines} lines` : "same", f]);
+  }
+  for (const dir of ["runtime", "ghidra_scripts", "src", "test"]) {
+    if (!existsSync(path.join(other, dir))) continue;
+    for (const f of readdirSync(path.join(other, dir))) {
+      if (/\.(cpp|h|java|ts)$/.test(f) && !existsSync(path.join(root, dir, f))) rows.push(["only there", path.join(dir, f)]);
+    }
+  }
+  const width = Math.max(...rows.map(([a]) => a.length));
+  for (const [a, f] of rows) console.log(`${a.padStart(width)}  ${f}`);
+  console.log(`\n${rows.filter(([a]) => a === "same").length} of ${rows.length} files are the same as in ${other}`);
+}
+
+/** The Windows functions the runtime implements (API(DLL, name, nargs) in runtime/*.cpp), as "DLL!name". */
+function implemented(): Set<string> {
+  const names = new Set<string>();
+  const dir = path.join(root, "runtime");
+  for (const f of readdirSync(dir).filter((x) => x.endsWith(".cpp"))) {
+    for (const m of readFileSync(path.join(dir, f), "utf8").matchAll(/^API\((\w+), (\w+), \d+\)/gm)) names.add(`${m[1]}!${m[2]}`);
+  }
+  return names;
+}
+/** The imports without an implementation: a call of one stops the program (exit 6). */
+function unimplemented(program: Program): string[] {
+  const have = implemented();
+  return program.thunks.map((t) => `${t.dll.replace(/\.DLL$/i, "").toUpperCase()}!${t.name}`).filter((n) => !have.has(n));
+}
 
 /** wc_program.cpp: the modules and the Windows functions they import, for the runtime. */
 function writeProgram(): void {
   const p = JSON.parse(readFileSync(programFile, "utf8")) as Program;
+  const missing = unimplemented(p);
+  if (missing.length) console.log(`${missing.length} imported Windows functions aren't implemented (a call stops the program): ${missing.join(", ")}`);
   const h = (n: number): string => `0x${hex(n)}`;
   const text = [
     "/* Generated by cli.ts: the program's modules and its imports from Windows, from program.json. */",
@@ -230,6 +358,7 @@ function writeProgram(): void {
 
 /** Configure (once) and build with CMake. */
 const doBuild = async (): Promise<void> => {
+  requireStamp(recompStamp, recompInputs(), "the generated C++", "npm run recomp");
   writeProgram();
   const buildDir = path.join(out, "build");
   const binDir = path.join(out, "bin");
@@ -252,16 +381,25 @@ async function main(): Promise<void> {
       break;
     case "decompile": {
       doUnpack();
+      const ghidra = findGhidra();
       mkdirSync(projectDir, { recursive: true });
-      await runHeadless(findGhidra(), [
+      rmSync(decompileStamp, { force: true });
+      await runHeadless(ghidra, [
         projectDir, projectName,
         "-import", imageFile, "-overwrite", "-loader", "BinaryLoader", "-loader-baseAddr", `0x${hex(IMAGE_LO)}`,
         "-processor", "x86:LE:32:default", "-cspec", "windows",
         "-scriptPath", scriptPath, "-preScript", "WcPeSetup.java", labelsFile,
         "-analysisTimeoutPerFile", "7200",
       ]);
+      writeFileSync(decompileStamp, JSON.stringify(stampOf(decompileInputs(), { ghidra: ghidra.version }), null, 1) + "\n");
       break;
     }
+    case "smoke":
+      await doSmoke();
+      break;
+    case "drift":
+      doDrift();
+      break;
     case "recomp":
       await doRecomp();
       break;
@@ -271,15 +409,18 @@ async function main(): Promise<void> {
     case "discover":
     case "play": {
       const play = command === "play";
+      if (!(Number(values.seconds) > 0)) throw new Error(`--seconds ${values.seconds}: not a number of seconds`);
       for (let round = 1; round <= 50; round++) {
         const env = play ? process.env : { ...process.env, WC_HEADLESS: "1" };
-        const res = await runGame([gameDir, ...positionals.slice(1)], env, play, play ? undefined : Number(values.seconds) * 1000);
+        const res = await runGame([gameDir, ...positionals.slice(1)], env, play, play ? undefined : Number(values.seconds) * 1000,
+          path.join(logsDir, `${command}-${round}.log`));
         const missing = /wc: missing code at ([0-9a-f]+)/.exec(res.stderr)?.[1];
         if (res.status !== 4 || !missing) {
           if (play) break;
           console.log(`round ${round}: ` + (res.timedOut ? `wc4w was still running after ${values.seconds} s, no missing code so far`
             : `wc4w stopped (exit ${res.status ?? res.signal}):`));
           console.log(res.stderr.split("\n").slice(-12).join("\n"));
+          console.log(`(all of it in ${res.log})`);
           break;
         }
         const known = existsSync(entriesFile) ? readFileSync(entriesFile, "utf8").split(/\s+/) : [];
@@ -295,22 +436,115 @@ async function main(): Promise<void> {
       break;
     }
     default:
-      console.error("usage: node src/cli.ts <unpack|imports|decompile|recomp|build|discover|play> [--game dir] [--out dir] [--seconds n]");
+      console.error("usage: node src/cli.ts <unpack|imports|decompile|recomp|build|smoke|discover|play|drift> [--game dir] " +
+        "[--out dir] [--seconds n] [--force] [--realtime] [--other dir]");
       process.exit(2);
   }
 }
 
-// Runs the game. Its stderr goes on to ours as it comes (in play) and its end is kept, where the
-// runtime reports missing code. Without a window its stdout is dropped.
-function runGame(args: string[], env: NodeJS.ProcessEnv, play: boolean, timeoutMs?: number):
-  Promise<{ status: number | null; signal: NodeJS.Signals | null; stderr: string; timedOut: boolean }> {
+// The smoke test's runs, one after the other in the same folder. Times are the virtual clock's
+// (WC_VIRTUAL_TIME: the same in every run), and near enough for --realtime too.
+interface Scenario {
+  name: string;
+  what: string;
+  keys: string;
+  seconds: number;
+  /** what the picture at the end must be: the display mode's depth (space flight is 8 bits, the rest
+   * 16 with GOG's settings) and at least so many colours (a blank or uniform screen has few) */
+  bits: number;
+  colours: number;
+}
+const SCENARIOS: Scenario[] = [
+  // The setup's first screens, the install menu, "IV", Esc in the intro and a click on the objectives:
+  // the opening simulator flight (GOG's 16-bit video settings; CLAUDE.md), then some flying: a target,
+  // the afterburner, turning, guns and a missile.
+  { name: "flight", what: "the simulator flight (Virtual Combat Mode)", seconds: 80, bits: 8, colours: 24,
+    keys: "8000:@55.325,8500:+lmb,8650:-lmb,20000:@585.325,20500:+lmb,20650:-lmb,26000:@320.330,26500:+lmb," +
+      "26650:-lmb,36000:esc,42000:@320.240,42500:+lmb,42650:-lmb," +
+      "56000:t,57000:+tab,61000:-tab,62000:+left,64000:-left,65000:+space,69000:-space,70000:enter,72000:+up,74000:-up" },
+  // The folder now has the flight's save (00000102.WSG): the game starts at the Duty Roster, without
+  // the intro. (It takes no clicks or keys there in scripted runs, so this is as far as the test goes.)
+  { name: "roster", what: "the Duty Roster", seconds: 8, bits: 16, colours: 100, keys: "" },
+];
+
+/** The screenshot the runtime reports ("wc: screenshot saved to ... (640x480, 8-bit mode, n instructions)")
+ * and how many colours it has. */
+function readShot(stderr: string): { bits: number; movie: boolean; instructions: number; colours: number } | undefined {
+  const m = /^wc: screenshot saved to (.+) \((\d+)x(\d+)(, an HD movie)?, (\d+)-bit mode, (\d+) instructions\)$/m.exec(stderr);
+  if (!m || !existsSync(m[1])) return undefined;
+  // the PNG: its IDAT chunks hold the rows (RGB, a filter byte 0 before each: the runtime's own writer)
+  const png = readFileSync(m[1]);
+  const idat: Buffer[] = [];
+  for (let o = 8; o + 8 <= png.length; o += 12 + png.readUInt32BE(o)) {
+    if (png.toString("latin1", o + 4, o + 8) === "IDAT") idat.push(png.subarray(o + 8, o + 8 + png.readUInt32BE(o)));
+  }
+  const rows = inflateSync(Buffer.concat(idat)), w = Number(m[2]), h = Number(m[3]);
+  const colours = new Set<number>();
+  for (let y = 0; y < h; y++) {
+    for (let x = 0, p = y * (1 + 3 * w) + 1; x < w; x++, p += 3) colours.add(rows.readUIntBE(p, 3));
+  }
+  return { bits: Number(m[5]), movie: m[4] !== undefined, instructions: Number(m[6]), colours: colours.size };
+}
+
+/** Runs the scenarios headless in a fresh copy of the game folder: the archives and movie folders
+ * linked, the other files copied but WC4.CFG (the game then runs its setup, which writes it) and the
+ * saves. Fails on a stop, an error, a message from the runtime or a picture that isn't what the
+ * scenario ends in. */
+async function doSmoke(): Promise<void> {
+  const smokeDir = path.join(out, "smoke"), game = path.join(smokeDir, "game");
+  rmSync(smokeDir, { recursive: true, force: true });
+  mkdirSync(game, { recursive: true });
+  for (const e of readdirSync(gameDir, { withFileTypes: true })) {
+    const from = path.join(gameDir, e.name), to = path.join(game, e.name);
+    if (/^(WC4\.CFG|SFOSAVED\.DAT|\d+\.WSG)$/i.test(e.name)) continue;
+    if (e.isDirectory() || /\.tre$/i.test(e.name)) symlinkSync(from, to);
+    else if (e.isFile()) copyFileSync(from, to);
+  }
+  const wanted = positionals.slice(1);
+  for (const s of SCENARIOS.filter((x) => !wanted.length || wanted.includes(x.name))) {
+    const shot = path.join(smokeDir, `${s.name}.png`);
+    const env = { ...process.env, WC_HEADLESS: "1", WC_KEYS: s.keys, WC_SCREENSHOT: shot, WC_SCREENSHOT_AT: String(s.seconds),
+      ...(values.realtime ? {} : { WC_VIRTUAL_TIME: "1" }) };
+    console.log(`${s.name}: ${s.seconds} s headless${values.realtime ? "" : " (virtual time)"} in ${game}`);
+    const started = Date.now();
+    const res = await runGame([game], env, false, (s.seconds + 120) * 1000, path.join(logsDir, `smoke-${s.name}.log`));
+    // the runtime's messages: all are problems but the screenshot's, a joystick's and its warnings
+    const messages = res.stderr.split("\n").filter((l) => l.startsWith("wc: ") && !/^wc: (screenshot saved|joystick|game controller) /.test(l));
+    const warnings = messages.filter((l) => /^wc: (divide overflow|read of|write of) /.test(l));
+    const pic = readShot(res.stderr);
+    const problems = [
+      ...(res.timedOut ? ["still running long after the screenshot"] : res.status !== 0 ? [`exit ${res.status ?? res.signal}`] : []),
+      ...(pic ? [] : ["no screenshot"]),
+      ...(pic && pic.bits !== s.bits ? [`the display is in a ${pic.bits}-bit mode, not ${s.bits}`] : []),
+      ...(pic && pic.movie ? ["an HD movie is playing"] : []),
+      ...(pic && pic.colours < s.colours ? [`the picture has only ${pic.colours} colours`] : []),
+      ...(existsSync(path.join(game, "WC4.CFG")) ? [] : ["the setup didn't write WC4.CFG"]),
+      ...messages.filter((l) => !warnings.includes(l)),
+    ];
+    for (const w of warnings) console.log(`warning: ${w}`);
+    if (problems.length) {
+      console.log(res.stderr.split("\n").slice(-12).join("\n"));
+      throw new Error(`smoke test failed in "${s.name}": ${problems.join("; ")} (all of it in ${res.log})`);
+    }
+    console.log(`${s.name} passed in ${((Date.now() - started) / 1000).toFixed(0)} s: ${shot} should show ${s.what} ` +
+      `(${pic!.bits}-bit mode, ${pic!.colours} colours, ${pic!.instructions} instructions)`);
+  }
+}
+
+// Runs the game. Its stderr goes on to ours as it comes (in play) and into the log; its end is
+// kept, where the runtime reports missing code. Without a window its stdout is dropped.
+function runGame(args: string[], env: NodeJS.ProcessEnv, play: boolean, timeoutMs: number | undefined, log: string):
+  Promise<{ status: number | null; signal: NodeJS.Signals | null; stderr: string; timedOut: boolean; log: string }> {
   const KEEP = 4 << 20;
+  mkdirSync(path.dirname(log), { recursive: true });
+  const logStream = createWriteStream(log);
   return new Promise((resolve, reject) => {
     const child = spawn(wcExe, args, { env, stdio: ["inherit", play ? "inherit" : "ignore", "pipe"] });
     let stderr = "", timedOut = false;
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => {
       if (play) process.stderr.write(chunk);
+      logStream.write(chunk);
       stderr += chunk;
       if (stderr.length > 2 * KEEP) stderr = stderr.slice(-KEEP);
     });
@@ -321,7 +555,8 @@ function runGame(args: string[], env: NodeJS.ProcessEnv, play: boolean, timeoutM
     child.on("error", reject);
     child.on("close", (status, signal) => {
       clearTimeout(timer);
-      resolve({ status, signal, stderr, timedOut });
+      logStream.end();
+      resolve({ status, signal, stderr, timedOut, log });
     });
   });
 }
