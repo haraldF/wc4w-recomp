@@ -7,35 +7,20 @@ changes. Lines like "WC3W.EXE" → "WC4W.EXE" in comments aren't listed.
 
 ## Fixes to carry back to wc3w-recomp
 
-They apply to both games and aren't in wc3w-recomp yet:
+None at the moment. All of these were carried back (on 11 November 2026): x87 rounding and
+out-of-range conversions, division overflow, `WC_STRICT`, wrapped memory reported, `guest_ptr`, the
+hooks checked on both sides, the generator's summary and fragment filter, Ghidra's version in the
+stamps, the virtual clock, the movie fixes (headless frames taken, shared frames, the clock past the
+sound's end), the mixer's interpolation, `win_thunk` without a string copy, the CLI (stamps,
+`--force`, smoke scenarios with a picture check, `drift`, the unimplemented imports, stderr logs in
+`out/logs/`), `src/tre.ts` (both versions, the checks, `--names`) and `test/`.
 
-- x87 rounding (`runtime/cpu.cpp`, `x87_fround`): `FIST`/`FISTP`/`FRNDINT` follow the control
-  word's RC bits. Before, they always rounded to nearest, so the C library's `_ftol` (which sets
-  chop) rounded `(int)f` instead of truncating it.
-- x87 conversions out of range (`x87_ftrunc(a, size, to)`, `WcRecomp.java` passes the output size):
-  the integer indefinite for NaN and values too large, not undefined behaviour.
-- Division (`runtime/wc_rt.h`; `WcRecomp.java` passes the size to `udiv`): a quotient that doesn't
-  fit (x86 #DE) is reported once and truncated; `INT64_MIN / -1` and `% -1` are defined.
-- `WC_STRICT=1` (`wc_rt.h` `mem_addr`, `cpu.cpp` `mem_outside`, `cpu_div_overflow`): stops on
-  memory outside 10000h–MEM_SIZE and on division overflow.
-- `src/cli.ts`: input stamps for `decompile`/`recomp`/`build`, `--force`, `smoke`, stderr logs
-  in `out/logs/`.
-- `src/tre.ts`: checks the hash table and names records against `treHash`, `--names`.
-- The virtual clock (`runtime/clock.cpp`, `host.h`; `WC_VIRTUAL_TIME`): `thread.cpp`, `kernel32.cpp`,
-  `user32.cpp`, `ddraw.cpp` (the vertical blank), `movie.cpp` and `host_sdl.cpp` (`host_tick`) take
-  their time from `clock_us` instead of five `steady_clock`s.
-- `guest_ptr` (`win.h`) wherever a Windows function used `M + address` (`kernel32.cpp`, `ddraw.cpp`,
-  `gdi32.cpp`, `dsound.cpp`, `winmm.cpp`, `user32.cpp`, `thread.cpp`, `win.cpp`'s `put_str`).
-- `cpu.cpp` `mem_outside`: wrapped accesses reported once for each instruction.
-- Hooks checked on both sides (`WcRecomp.java`'s `wc_hook_addr` and `summary.json`, `win.cpp`
-  `check_hooks`, `cli.ts`); fragments only follow flows into the image.
-- `movie.cpp`: frames shared with the host instead of copied twice, the clock going on past the
-  sound's end, `wait_ahead`; `host_sdl.cpp` takes the frames due headless too (a headless movie
-  never ended by itself, and its frames piled up).
-- `sound.cpp`: linear interpolation between frames; `win.cpp` `win_thunk` without a string copy
-  for each call; `thread.cpp` without the unused `thread_poll`.
-- `src/cli.ts`: Ghidra's version in the stamps, the generator's summary, the unimplemented imports
-  listed, smoke scenarios with a picture check, `drift`; `test/` (`npm test`).
+What still differs in shared files for wc3w's reasons, not listed below: `fixes.cpp` (its own hooks
+and the integer math at 46EABCh...), `hooks.txt`, `cli.ts` (the modules, `DLL_ALIASES`, the smoke
+scenario: a new game to the first mission, no setup or `WC4.CFG`; `UNHANDLED_OPS` 3; the PNG
+reader also takes indexed pictures, since its screenshots are 8-bit with a palette), `ddraw.cpp`
+and `host_sdl.cpp` (8 bits only), the window's title, `src/tre.ts` (two comments name WC3W.EXE's
+hash function). `npm run drift`: 16 of 34 shared files are the same.
 
 ## WC4-only (not for wc3w-recomp)
 
@@ -50,6 +35,5 @@ They apply to both games and aren't in wc3w-recomp yet:
 - `runtime/fixes.cpp`: the movie handler's AVI check skipped (475721h); the integer math
   replacements (49D73Ch...: WC4W.EXE's addresses).
 - `runtime/host_sdl.cpp`: the window's title.
-- `src/tre.ts`: XTRE version 1 (WC4's hash, the hash table as a binary tree).
 - `src/cli.ts`: the modules (`WC4W.EXE`, `Xanlib.dll` with their SHA-256), no DLL aliases (WC3W
   imports DirectDraw from `WC3EN.dll`).
