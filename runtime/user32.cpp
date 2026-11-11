@@ -455,5 +455,6 @@ API(USER32, MessageBoxA, 4)
 {
 	std::string text = arg(1) ? guest_str(arg(1)) : "", caption = arg(2) ? guest_str(arg(2)) : "";
 	fprintf(stderr, "wc: message box \"%s\": %s\n", caption.c_str(), text.c_str());
+	cpu_report(stderr); /* where from: the callers */
 	return 1; /* IDOK */
 }

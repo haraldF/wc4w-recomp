@@ -2,6 +2,7 @@
 # runtime/fixes.cpp and movie.cpp), before the original code runs. Changes need npm run recomp.
 483ad0	# Play_Movie: HD movies instead (movie.cpp)
 475721	# the movie handler's AVI check: skipped, the scenes are MP4 files (fixes.cpp)
+49ab31	# the file loader giving up on a file: its name reported (fixes.cpp)
 49d73c	# a * 256 / b with a 64-bit quotient: no divide overflow (fixes.cpp)
 49d74f	# a * b / 256 likewise
 49d75e	# a * b / c likewise

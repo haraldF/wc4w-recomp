@@ -12,7 +12,9 @@
  *    index (4D94D0h); after them its own functions (draw_movie_frame 4830D0h, handle_movie(0)
  *    4754F0h) show a conversation choice and fill the list again, until it starts with -1;
  *  - Esc ends the movie (the game's halt flag, 4D94C0h, too); the next starts once it's released;
- *  - a scene without its first file plays with the original player.
+ *  - a branch without its file is skipped (reported): the original player would need the scene's
+ *    AVI, which GOG's archives don't have, and stop the game ("Application files could not be
+ *    found"); only without the movie folder (or WC_HD_MOVIES=0) does it play the scene.
  * The host shows the newest frame due (movie_frame), with the game's own picture over it where it
  * isn't colour 0 (the choice text). The movie's time is its sound's (what the mixer has played);
  * with virtual time (host.h) the program waits for the decoder, so that a run repeats exactly. WC_HD_MOVIES=0: the original movies; WC_HD_MOVIES=dir: another
@@ -375,21 +377,28 @@ void pump(void)
 	thread_sleep(5);
 }
 
-/* Plays the list's branches from the current index; false if one of them failed to start. The
- * index is left at the last one played. */
-bool play_branches(const std::filesystem::path &dir, const std::string &scene)
+/* Plays the list's branches from the current index, the index left at the last one. A branch
+ * without its file, or one that won't play, is skipped (reported): the original player would only
+ * stop the game, since GOG's archives have none of the scenes. */
+void play_branches(const std::filesystem::path &dir, const std::string &scene)
 {
 	for (uint32_t i = rd32(BRANCH_INDEX);; i++) {
 		int32_t branch = (int32_t)rd32(BRANCH_LIST + 4 * i);
-		if (branch < 0 || halted()) return true;
+		if (branch < 0 || halted()) return;
 		std::filesystem::path file = branch_file(dir, scene, branch);
 		wr32(BRANCH_INDEX, i);
 		if (file.empty()) continue;
+		std::error_code ec;
+		if (!std::filesystem::exists(file, ec)) {
+			fprintf(stderr, "wc: HD movie %s isn't there: scene %s's branch %d skipped\n", file.string().c_str(), scene.c_str(),
+				branch);
+			continue;
+		}
 		player *p = new player(file);
 		if (!p->start()) {
-			fprintf(stderr, "wc: HD movie %s: cannot play\n", file.string().c_str());
+			fprintf(stderr, "wc: HD movie %s: cannot play, skipped\n", file.string().c_str());
 			delete p;
-			return false;
+			continue;
 		}
 		if (wc_trace) fprintf(stderr, "wc: HD movie %s\n", file.string().c_str());
 		{
@@ -420,11 +429,12 @@ bool play_movie(void)
 		ini_read = true;
 		read_ini(dir / "movies.ini");
 	}
-	int32_t first = (int32_t)rd32(BRANCH_LIST + 4 * rd32(BRANCH_INDEX));
-	std::filesystem::path file = first >= 0 ? branch_file(dir, scene, first) : std::filesystem::path();
+	/* the original player only without the movie folder: it needs the scene's AVI, which GOG's
+	 * archives don't have (an empty list too: it opens the AVI first). Here an empty list plays
+	 * nothing and goes on to the choice, as the original does at a list's end. */
 	std::error_code ec;
-	if (file.empty() || !std::filesystem::exists(file, ec)) {
-		if (wc_trace) fprintf(stderr, "wc: no HD movie for %s (%s)\n", scene.c_str(), file.string().c_str());
+	if (!std::filesystem::is_directory(dir, ec)) {
+		fprintf(stderr, "wc: no %s for the HD movies: scene %s with the original player\n", dir.string().c_str(), scene.c_str());
 		return false;
 	}
 	/* as the game's player starts: the double click time (a third of a second), no frames yet */
@@ -436,12 +446,8 @@ bool play_movie(void)
 		std::lock_guard<std::mutex> g(show_lock);
 		active = true;
 	}
-	bool ok = true;
 	while (!halted()) {
-		if (!play_branches(dir, scene)) {
-			ok = false;
-			break;
-		}
+		play_branches(dir, scene);
 		if (halted()) break;
 		/* the game's conversation choice (if any), which sets the next branches */
 		win_call(DRAW_MOVIE_FRAME, {});
@@ -458,10 +464,6 @@ bool play_movie(void)
 		shown.reset();
 	}
 	ddraw_clear();
-	if (!ok) {
-		wr(R_SP, 4, esp);
-		return false; /* the rest with the original player, from where this stopped */
-	}
 	wr(R_AX, 4, 1);
 	wr(R_SP, 4, esp + 4); /* the RET (cdecl: the caller pops the arguments) */
 	return true;

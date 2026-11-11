@@ -1,5 +1,7 @@
 /* Fixes to the game's own flaws and to what GOG's release lacks, as hooks (hooks.txt), ported from
  * the enhancement patch (Mod_GeneralFixes.cpp; MIT, by Matt Wells). */
+#include <cstdio>
+
 #include "win.h"
 
 namespace {
@@ -44,10 +46,23 @@ bool mul_256_div(void) { return returns(divide(arg_s(0) * 256, arg_s(1), 0x49d73
 bool mul_div_256(void) { return returns((arg_s(0) * arg_s(1)) >> 8); }                        /* a * b / 256 */
 bool mul_div(void) { return returns(divide(arg_s(0) * arg_s(1), arg_s(2), 0x49d75e)); }       /* a * b / c */
 
+/* The file loader (49AAE0h) about to give up on a file it must have, in no archive and not in the
+ * folder: "Application files could not be found on the local hard drive or on any CD ROM drive",
+ * and the program ends. Which file is the first thing to know: said here, then the game goes on to
+ * its message. ESI is the file object, its name at the start. */
+bool report_missing_file(void)
+{
+	fprintf(stderr, "wc: the game can't find %s (in no archive and not in the game folder)\n",
+		guest_str((uint32_t)rd(R_SI, 4)).c_str());
+	cpu_report(stderr);
+	return false;
+}
+
 struct init {
 	init()
 	{
 		hook_register(0x475721, skip_movie_file_check);
+		hook_register(0x49ab31, report_missing_file);
 		hook_register(0x49d73c, mul_256_div);
 		hook_register(0x49d74f, mul_div_256);
 		hook_register(0x49d75e, mul_div);

@@ -153,6 +153,19 @@ movie folders linked): it writes `WC4.CFG` and saves there.
   frame count 4D94A4h, click time 4C7C80h, frequency 4C01D8h, translate messages 4ADE20h, message
   nodes 4AE2A0h/4AE2E0h, movie messages 4827F0h, draw_movie_frame 4830D0h before handle_movie(0)
   4754F0h). The intro `SC_0010A.mp4` (1080p) plays.
+- "Application files could not be found on the local hard drive or on any CD ROM drive" (string
+  resource 4638, the game's only use of it at 49AB31h) is the file loader (49AAE0h) giving up on a
+  file it must have, in no archive and not in the folder; then the program ends. The hook there
+  names the file ("wc: the game can't find ..."), and a message box now prints the callers. With
+  GOG's files the likely one is a scene's AVI: the original Play_Movie opens
+  `..\..\DATA\ENGLMOVI\SC_xxxx.AVI` first (483BF8h, required), and the archives don't have the
+  scenes. So `movie.cpp` no longer hands a scene to the original player when an MP4 is missing (it
+  did for a missing first branch, reported only with `WC_TRACE`): a branch without its file, or
+  one that won't play, is skipped with a message, an empty list plays nothing and goes on to the
+  choice, and only without the movie folder (or `WC_HD_MOVIES=0`) does the original player run.
+  Checked: with `SC_0010A.mp4` hidden the intro goes on to the first choice; with
+  `WC_HD_MOVIES=0` the loader names `..\..\DATA\ENGLMOVI\SC_0010.AVI` before the message. Which
+  scene stopped a game in the window (after two saves) isn't known: the log had no trace.
 - Esc during the intro leads to the opening "Virtual Combat Mode" (a simulator fight with Maniac):
   space flight in 640x480x8 with the cockpit, the in-flight comm video (from MOVIES1.TRE through
   XanLib), targeting and guns. After it the gameflow's "Duty Roster" (load/save) screen. 100 s of
@@ -181,6 +194,8 @@ enters the recompiled code there with `run_code(to)` and returns true: the funct
 returns through the shadow stack (`fixes.cpp`, `jump`).
 - 483AD0h: Play_Movie, the HD movies (`movie.cpp`).
 - 475721h: the movie handler's AVI check, skipped (`fixes.cpp`).
+- 49AB31h: the file loader giving up on a required file: its name reported (`fixes.cpp`), then the
+  game's message as before.
 - 49D73Ch, 49D74Fh, 49D75Eh: `a * 256 / b`, `a * b / 256`, `a * b / c` (cdecl, 32-bit arguments,
   IMUL then IDIV on EDX:EAX): 64-bit arithmetic cut to 32 bits, the patch's "replacement integer
   math" (`fixes.cpp`). A zero divisor still stops the program.
