@@ -39,7 +39,7 @@ npm run decompile    # import the image into a Ghidra project (out/ghidra) and a
 npm run recomp       # translate it to C++ (out/recomp) and build out/bin/wc4w (the generator only when its inputs changed)
 npm run build        # only rebuild out/bin/wc4w, after changes to runtime/
 npm run smoke        # run it headless from the setup to the first flight, in a fresh copy of the game folder
-npm test             # unit tests of the archive and PE readers and the CPU helpers (no game files needed)
+npm test             # unit tests of the archive, PE, save and .srt readers and the CPU helpers (no game files needed)
 npm run discover     # run it headless, adding code it reaches only through pointers (entries.txt)
 npm run play         # the same in the window
 npm run tre -- path/to/Missions.tre [outdir]   # list (or unpack) a data archive
@@ -54,6 +54,15 @@ out/bin/wc4w path/to/WC4_Enhanced
 Without `WC4.CFG` (or with GOG's) the game first runs its setup: the speed test, then the video
 options, the install menu and "IV". Environment variables for debugging and input (`WC_TRACE`,
 `WC_KEYS`, `WC_STRICT`, `WC_VIRTUAL_TIME`, `WC_HD_MOVIES`, `WC_STICK_AXES`...) are listed in `CLAUDE.md`.
+
+The saved games: the player's kills, and the wingmen's morale (0-9, which the game never shows),
+status (on the roster, sick, AWOL, dead, whether they die when shot down) and kills (`*.WSG` in the
+game folder, with their names from `WSG_NDX.WSG`, or the files given):
+
+```bash
+npm run print-save
+npm run print-save -- path/to/WC4_Enhanced/00000000.WSG
+```
 
 ## License
 

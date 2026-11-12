@@ -41,3 +41,5 @@ hash function). `npm run drift`: 16 of 34 shared files are the same.
 - `runtime/host_sdl.cpp`: the window's title.
 - `src/cli.ts`: the modules (`WC4W.EXE`, `Xanlib.dll` with their SHA-256), no DLL aliases (WC3W
   imports DirectDraw from `WC3EN.dll`).
+- `src/print-save.ts`: WC4's save format (PILT as 26 two-byte slots, morale 0-9 and flags; 25
+  pilots; the slots' names from `WSG_NDX.WSG`), written anew rather than shared with wc3w's.

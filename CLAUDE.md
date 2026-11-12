@@ -199,6 +199,22 @@ movie folders linked): it writes `WC4.CFG` and saves there.
   archives); `--names file` names entries from guessed paths.
 - Language.tre and Missions.tre each have one `NAV` entry no slot points to (index 1845, 99).
 
+## Saved games (src/print-save.ts)
+
+- `NNNNNNNN.WSG` (the slot's number in decimal; 102 the autosave, "Current Mission"): IFF FORM SAVE
+  with INFO (version 9, the CD), STAT, OPTS, FLAG, REGS, PILT, KILL, ACE_, PLYR, HARD, MISL, BRNC,
+  CRED (reader 479D00h). `WSG_NDX.WSG` names the slots: a chunk per slot, its tag the slot's number
+  (little-endian), its body the name (44 bytes).
+- Unlike WC3's 12 dwords, PILT is 26 slots of two bytes, morale + 1 and flags; KILL and ACE_ are 26
+  dwords. The 25 pilots (slot 25 is never named) and their order are Language.tre's PILT IFF (the
+  dossiers); the killboard (46D940h) lists those with flag 1 and its STAT column is DEAD (morale
+  byte 0), AWOL (flag 4), SICK (flag 2) or OK. Flag 8: dies when shot down. Morale is 0-9; in flight
+  only "4 or more" matters (which comm messages a wingman uses). `print-save.ts`'s header has the
+  addresses. PLYR's kills include the aces (the gameflow adds a mission's kills and aces to it,
+  4671A0h).
+- What a mission counts (Tyr 1's photos: 4D5474h, 10 per complex) is not saved: a save is made in
+  the gameflow, before or after a mission.
+
 ## Hooks (hooks.txt)
 
 As in wc3w-recomp: the generated code first calls `wc_hook(addr)`; a handler returning true makes
@@ -267,7 +283,7 @@ a `DIV`/`IDIV` quotient too large. Movies: `WC_HD_MOVIES=0` off, or another fold
   `smoke`/`discover`/`play` run's stderr is in `out/logs/`.
 - `npm test`: `node --test` on `test/*.test.ts`, no game files needed: the archive reader (LZW with
   an encoder of its own, RefPack, both hashes, archives made in memory), the PE reader (a module
-  made in memory), the `.srt` reader (`test/srt_test.cpp` with `runtime/srt.cpp`), and the generated code's helpers (`test/rt_test.cpp` with `runtime/cpu.cpp`,
+  made in memory), the saved-game reader (a save made in memory), the `.srt` reader (`test/srt_test.cpp` with `runtime/srt.cpp`), and the generated code's helpers (`test/rt_test.cpp` with `runtime/cpu.cpp`,
   built with `c++`: DIV/IDIV, x87 rounding and conversions, 80-bit values, flags, memory, the
   shadow stack).
 - `npm run imports` and `build` list the imported Windows functions without an implementation

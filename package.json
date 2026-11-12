@@ -18,6 +18,7 @@
     "discover": "node src/cli.ts discover",
     "play": "node src/cli.ts play",
     "tre": "node src/tre.ts",
+    "print-save": "node src/print-save.ts",
     "drift": "node src/cli.ts drift",
     "test": "node --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
