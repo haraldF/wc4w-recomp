@@ -166,6 +166,19 @@ movie folders linked): it writes `WC4.CFG` and saves there.
   Checked: with `SC_0010A.mp4` hidden the intro goes on to the first choice; with
   `WC_HD_MOVIES=0` the loader names `..\..\DATA\ENGLMOVI\SC_0010.AVI` before the message. Which
   scene stopped a game in the window (after two saves) isn't known: the log had no trace.
+- Subtitles (`subtitle.cpp`, `srt.cpp`): GOG's `.srt` files, `<movie folder>/subtitles/sc_0010a.en.srt`
+  (`.de`, `.fr`; `Master_FMVs_Source` and `vob` have the same), drawn into each decoded frame with FreeType
+  (white, black outline, a twentieth of the frame's height, wrapped to 90% of its width; the
+  system's Arial Bold, `WC_SUBTITLE_FONT=file` another). When the game's option is on (4D8720h, the
+  setup's "Subtitles On", (321,200) on its options screen; GOG's `WC4.CFG` and the setup's default
+  have it off), in its language (4B8014h: 0 English, 1 German, 2 French): both from the patch,
+  checked with a memory dump. German and French are **code page 850**, not Latin-1 (0x81 u
+  umlaut, 0x82 e acute, 0xE1 sharp s; `file` says "Non-ISO extended-ASCII"); English is ASCII. Many
+  cues are empty (a gap) and their timings differ between the languages. The game's own subtitles
+  (`BRNCHSUB` IFFs from Language.tre, "Could not find branch subtitle chunk" at 475ABCh) are loaded
+  in the part of the movie handler that the AVI fix jumps over (475721h-475B09h), and drawn by the
+  original Play_Movie, which `movie.cpp` replaces: neither runs. Checked headless in all three
+  languages (`WC_POKE=4b8014:1`) at the intro's dialogue, about 1:42 into `SC_0010A.mp4`.
 - Esc during the intro leads to the opening "Virtual Combat Mode" (a simulator fight with Maniac):
   space flight in 640x480x8 with the cockpit, the in-flight comm video (from MOVIES1.TRE through
   XanLib), targeting and guns. After it the gameflow's "Duty Roster" (load/save) screen. 100 s of
@@ -209,7 +222,8 @@ returns through the shadow stack (`fixes.cpp`, `jump`).
 1. The rest of the patch's WC4W.EXE fixes (`Mod_GeneralFixes.cpp`'s `#else` branch): the DATA
    folder lookup (49AB03h), the long pause after autopilot (487E31h: a constant in the code, so a
    hook, not a poke), more memory (4AD0B2h), more watchers (4A14B5h), the texture sampler crash
-   fix; in-flight HD movies (424722h, 424A84h, 441AFEh), subtitles, choice-text colours.
+   fix; in-flight HD movies (424722h, 424A84h, 441AFEh), choice-text colours; the patch's branch
+   text (4C7048h, shown for 8 s as a marquee: what it is isn't known).
 2. Playing further: Duty Roster, gameflow, missions; `npm run discover` when code is missing.
    **The Duty Roster takes no input in scripted runs**: with a save in the folder (`00000102.WSG`,
    written when the simulator flight starts) the game starts there, in 16 bits, drawing with
@@ -229,7 +243,7 @@ As in wc3w-recomp: `WC_TRACE=1` (Windows calls), `WC_TRACE=2` (every instruction
 (memory on an error), `WC_KEYS=ms:key,...` (`@x.y` moves the pointer, `+lmb`/`-lmb`), `WC_VIRTUAL_TIME=1` (below). New:
 `WC_STRICT=1` stops where Windows would fault: memory outside 10000h-MEM_SIZE (otherwise wrapped),
 a `DIV`/`IDIV` quotient too large. Movies: `WC_HD_MOVIES=0` off, or another folder than
-`Master_FMVs_Upscaled` (`Master_FMVs_Source`, `vob`). Joystick: `WC_STICK_AXES=x,y,twist,throttle`
+`Master_FMVs_Upscaled` (`Master_FMVs_Source`, `vob`); `WC_SUBTITLE_FONT=file` the subtitles' font. Joystick: `WC_STICK_AXES=x,y,twist,throttle`
 (SDL axis numbers, `-n` reversed), `WC_JOYSTICK=1` a virtual one when there is none.
 - `WC_VIRTUAL_TIME=1` (headless only; `clock.cpp`, `host.h`): one virtual clock for everything
   (`QueryPerformanceCounter`, message times, `Sleep` and the thread scheduler, the vertical blank,
@@ -253,7 +267,7 @@ a `DIV`/`IDIV` quotient too large. Movies: `WC_HD_MOVIES=0` off, or another fold
   `smoke`/`discover`/`play` run's stderr is in `out/logs/`.
 - `npm test`: `node --test` on `test/*.test.ts`, no game files needed: the archive reader (LZW with
   an encoder of its own, RefPack, both hashes, archives made in memory), the PE reader (a module
-  made in memory), and the generated code's helpers (`test/rt_test.cpp` with `runtime/cpu.cpp`,
+  made in memory), the `.srt` reader (`test/srt_test.cpp` with `runtime/srt.cpp`), and the generated code's helpers (`test/rt_test.cpp` with `runtime/cpu.cpp`,
   built with `c++`: DIV/IDIV, x87 rounding and conversions, 80-bit values, flags, memory, the
   shadow stack).
 - `npm run imports` and `build` list the imported Windows functions without an implementation

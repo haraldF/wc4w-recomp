@@ -11,6 +11,9 @@
  *  - the game keeps the branches to play in a list (4C6FE8h, -1 at the end) with the current
  *    index (4D94D0h); after them its own functions (draw_movie_frame 4830D0h, handle_movie(0)
  *    4754F0h) show a conversation choice and fill the list again, until it starts with -1;
+ *  - subtitles (the game's option, 4D8720h, in its language, 4B8014h: English, German, French) from
+ *    <dir>subtitles/<file's name>.en.srt (.de, .fr), drawn into the frames (subtitle.cpp); the game's
+ *    own (BRNCHSUB.IFF) are read in the part of its movie handler that fixes.cpp jumps over;
  *  - Esc ends the movie (the game's halt flag, 4D94C0h, too); the next starts once it's released;
  *  - a branch without its file is skipped (reported): the original player would need the scene's
  *    AVI, which GOG's archives don't have, and stop the game ("Application files could not be
@@ -44,6 +47,7 @@ extern "C" {
 
 #include "host.h"
 #include "sound.h"
+#include "subtitle.h"
 #include "win.h"
 
 /* ddraw.cpp: the primary surface and its back buffer to colour 0, so only what the game draws
@@ -55,7 +59,7 @@ namespace {
 
 /* the game's movie state */
 const uint32_t BRANCH_LIST = 0x4c6fe8, BRANCH_INDEX = 0x4d94d0, HALT_FLAG = 0x4d94c0, FRAME_COUNT = 0x4d94a4,
-	CLICK_TIME = 0x4c7c80, FREQUENCY = 0x4c01d8;
+	CLICK_TIME = 0x4c7c80, FREQUENCY = 0x4c01d8, SUBTITLES_ON = 0x4d8720, LANGUAGE = 0x4b8014;
 const uint32_t TRANSLATE_MESSAGES = 0x4ade20, MESSAGE_NODE_ADD = 0x4ae2a0, MESSAGE_NODE_REMOVE = 0x4ae2e0,
 	MOVIE_MESSAGES = 0x4827f0, DRAW_MOVIE_FRAME = 0x4830d0, HANDLE_MOVIE = 0x4754f0;
 
@@ -87,6 +91,22 @@ void read_ini(const std::filesystem::path &file)
 	}
 }
 
+/* dir/name, matched case-insensitively as on Windows (WC4's movies are SC_0010A.mp4, their
+ * subtitles sc_0010a.en.srt); dir/name as it is when there's none */
+std::filesystem::path find_file(const std::filesystem::path &dir, const std::string &want)
+{
+	std::filesystem::path file = dir / want;
+	std::error_code ec;
+	if (std::filesystem::exists(file, ec)) return file;
+	for (const auto &e : std::filesystem::directory_iterator(dir, ec)) {
+		std::string have = e.path().filename().string();
+		if (have.size() == want.size() && std::equal(have.begin(), have.end(), want.begin(),
+			[](char x, char y) { return tolower((unsigned char)x) == tolower((unsigned char)y); }))
+			return e.path();
+	}
+	return file;
+}
+
 /* The file of a scene's branch; empty: the branch is skipped */
 std::filesystem::path branch_file(const std::filesystem::path &dir, const std::string &scene, int branch)
 {
@@ -98,18 +118,19 @@ std::filesystem::path branch_file(const std::filesystem::path &dir, const std::s
 		if (auto b = s->second.find(letter); b != s->second.end()) letter = b->second;
 	}
 	if (letter == "-1") return {};
-	std::filesystem::path file = dir / (name + letter + ".mp4");
-	std::error_code ec;
-	if (std::filesystem::exists(file, ec)) return file;
-	/* WC4's are upper case (SC_0010A.mp4): matched case-insensitively, as on Windows */
-	std::string want = file.filename().string();
-	for (const auto &e : std::filesystem::directory_iterator(dir, ec)) {
-		std::string have = e.path().filename().string();
-		if (have.size() == want.size() && std::equal(have.begin(), have.end(), want.begin(),
-			[](char x, char y) { return tolower((unsigned char)x) == tolower((unsigned char)y); }))
-			return e.path();
-	}
-	return file;
+	return find_file(dir, name + letter + ".mp4");
+}
+
+/* The subtitles for a movie file, if the game shows them and has them in its language */
+std::vector<subtitle_cue> subtitles_for(const std::filesystem::path &movie)
+{
+	static const char *const suffix[] = { ".en.srt", ".de.srt", ".fr.srt" };
+	uint32_t language = rd32(LANGUAGE);
+	if (!rd32(SUBTITLES_ON) || language >= 3) return {};
+	std::filesystem::path file = find_file(movie.parent_path() / "subtitles", movie.stem().string() + suffix[language]);
+	std::vector<subtitle_cue> cues = srt_read(file);
+	if (wc_trace) fprintf(stderr, "wc: subtitles %s: %zu cues\n", file.string().c_str(), cues.size());
+	return cues;
 }
 
 /* ---- the decoder: a thread reading the file, frames (RGB) and sound (to the mixer) ---- */
@@ -122,7 +143,7 @@ struct frame {
 
 class player {
 public:
-	explicit player(const std::filesystem::path &file) : file_(file) {}
+	player(const std::filesystem::path &file, std::vector<subtitle_cue> cues) : file_(file), cues_(std::move(cues)) {}
 	~player() { stop(); }
 
 	bool start()
@@ -254,6 +275,7 @@ private:
 		uint8_t *dst[1] = { (uint8_t *)pixels->data() };
 		int pitch[1] = { 4 * w_ };
 		sws_scale(sws_, f->data, f->linesize, 0, f->height, dst, pitch);
+		if (const subtitle_cue *c = srt_at(cues_, out.pts)) subtitle_draw(pixels->data(), w_, h_, c->text);
 		out.pixels = std::move(pixels);
 		std::lock_guard<std::mutex> g(lock_);
 		frames_.push_back(std::move(out));
@@ -320,6 +342,7 @@ private:
 	}
 
 	std::filesystem::path file_;
+	std::vector<subtitle_cue> cues_;
 	AVFormatContext *fmt_ = nullptr;
 	AVCodecContext *vdec_ = nullptr, *adec_ = nullptr;
 	SwsContext *sws_ = nullptr;
@@ -394,7 +417,7 @@ void play_branches(const std::filesystem::path &dir, const std::string &scene)
 				branch);
 			continue;
 		}
-		player *p = new player(file);
+		player *p = new player(file, subtitles_for(file));
 		if (!p->start()) {
 			fprintf(stderr, "wc: HD movie %s: cannot play, skipped\n", file.string().c_str());
 			delete p;

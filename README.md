@@ -10,7 +10,8 @@ Windows version: the pipeline, the generator (`ghidra_scripts/WcRecomp.java`) an
 of its own. The projects share nothing at build time.
 
 State: early. Headless, the game runs its first-time setup (speed test, video options), plays the
-intro as the 30th Anniversary Edition's HD movie (decoded with FFmpeg), flies the opening simulator
+intro as the 30th Anniversary Edition's HD movie (decoded with FFmpeg, with its subtitles when the
+game's option is on), flies the opening simulator
 mission and reaches the Duty Roster and the first mission, with GOG's default (16-bit) video
 settings or 8-bit ones. See `CLAUDE.md` for details and what's missing.
 
@@ -21,7 +22,7 @@ Anniversary Edition from GOG. Its installer is for Windows, but `innoextract` un
 only the `WC4_Enhanced` folder is needed:
 
 ```bash
-brew install node ghidra innoextract cmake ninja sdl3 ffmpeg
+brew install node ghidra innoextract cmake ninja sdl3 ffmpeg freetype
 innoextract --gog -I WC4_Enhanced -d ../game4.30 path/to/setup_wing_commander_iv_the_price_of_freedom_30th_anniversary_edition_v1.0_\(95014\).exe
 npm ci
 ```

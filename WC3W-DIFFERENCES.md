@@ -7,7 +7,11 @@ changes. Lines like "WC3W.EXE" → "WC4W.EXE" in comments aren't listed.
 
 ## Fixes to carry back to wc3w-recomp
 
-None at the moment. All of these were carried back (on 11 November 2026): x87 rounding and
+- The HD movies' subtitles: `runtime/srt.cpp`, `subtitle.cpp`, `subtitle.h`, `test/srt*`, FreeType
+  in `CMakeLists.txt`, `movie.cpp`'s `find_file` and `subtitles_for` (WC3W.EXE's option and
+  language addresses from its patch; check its `.srt` files' encoding).
+
+Earlier ones were all carried back. These were carried back (on 11 November 2026): x87 rounding and
 out-of-range conversions, division overflow, `WC_STRICT`, wrapped memory reported, `guest_ptr`, the
 hooks checked on both sides, the generator's summary and fragment filter, Ghidra's version in the
 stamps, the virtual clock, the movie fixes (headless frames taken, shared frames, the clock past the
