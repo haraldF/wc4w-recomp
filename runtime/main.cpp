@@ -34,6 +34,8 @@ int main(int argc, char **argv)
 	signal(SIGTERM, on_signal);
 	const char *trace = getenv("WC_TRACE");
 	wc_trace = trace ? atoi(trace) : 0;
+	const char *trace_at = getenv("WC_TRACE_AT");
+	wc_trace_ins = wc_trace >= 2 || (trace_at && *trace_at);
 	const char *watch = getenv("WC_WATCH");
 	wc_watch = watch ? (uint32_t)strtoul(watch, NULL, 16) : 0;
 	const char *strict = getenv("WC_STRICT");

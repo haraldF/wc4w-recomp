@@ -16,6 +16,7 @@ uint8_t R[R_SIZE];
 uint8_t M[MEM_SIZE + 16];
 uint64_t wc_icount;
 int wc_trace;
+bool wc_trace_ins;
 int wc_strict;
 uint32_t wc_watch, wc_last_ins;
 uint32_t wc_ret_stack[WC_RET_STACK];
@@ -298,8 +299,9 @@ void trace_ins(uint32_t at)
 	}
 	if (!trace_at.empty()) {
 		if (std::none_of(trace_at.begin(), trace_at.end(), [at](auto r) { return at >= r.first && at < r.second; })) return;
-		fprintf(stderr, "  %06x  EAX=%08llx ECX=%08llx EDX=%08llx ESP=%08llx ST0=%g ST1=%g ST2=%g CW=%04llx\n", at, rd(R_AX, 4),
-			rd(R_CX, 4), rd(R_DX, 4), rd(R_SP, 4), x87_fval(rd(0x1100, 8), 8), x87_fval(rd(0x1110, 8), 8),
+		fprintf(stderr, "  %06x  EAX=%08llx EBX=%08llx ECX=%08llx EDX=%08llx ESI=%08llx EDI=%08llx ESP=%08llx EBP=%08llx "
+			"ST0=%g ST1=%g ST2=%g CW=%04llx\n", at, rd(R_AX, 4), rd(R_BX, 4), rd(R_CX, 4), rd(R_DX, 4), rd(R_SI, 4),
+			rd(R_DI, 4), rd(R_SP, 4), rd(R_BP, 4), x87_fval(rd(0x1100, 8), 8), x87_fval(rd(0x1110, 8), 8),
 			x87_fval(rd(0x1120, 8), 8), rd(R_FPCW, 2));
 		return;
 	}

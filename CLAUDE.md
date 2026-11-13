@@ -215,6 +215,25 @@ movie folders linked): it writes `WC4.CFG` and saves there.
 - What a mission counts (Tyr 1's photos: 4D5474h, 10 per complex) is not saved: a save is made in
   the gameflow, before or after a mission.
 
+## Damage (451280h-451F30h)
+
+- A hit's damage (the weapon's, 18 for the simulator's guns) is scaled by the skill level (byte
+  4D5464h, 0 Rookie to 5 Nightmare, the flight options): Rookie doubles the player's hits and halves
+  those on the player; Veteran to Crazy take a quarter off hits on the player; nothing else.
+- Mission scripts make ships immune: opcode FEED00E9h ORs its operand into the ship's flags (+7Ch),
+  FEED010Dh clears bits, FEED00F6h sets 4FFh (and clears all). 451C6Bh: when the flags of target or
+  attacker have the hit's bit (8 guns, 10h missiles and torpedoes, 2/6 type 5Eh/DEh ships) the damage
+  is negated, which the shields (`[EDI+DCh]`) take as nothing; 400h skips the hit. Missions.tre's
+  programs use 1Ah (guns and missiles) on chosen units in about 40 missions: such a ship can't be
+  shot down however often it is hit. Then the shields, and what gets through goes to the armor
+  (`[EDI+E0h]`, by the side hit).
+- 4D5468h, set by mission opcodes FEED00E6h (1)/FEED00ECh (2): the player's and the wingmen's hits
+  do no damage (a contest: 2 adds points to 4D546Ch/4D5470h, shown on the HUD). Cleared at a
+  mission's start.
+- Checked headless (simulator, `WC_TRACE_AT=451359,451393,45145b,451d3c,451d52`): 60 enemy hits of
+  18, 14 after the skill, all absorbed by the shields; the scripted flight doesn't aim, so none of
+  the player's.
+
 ## Hooks (hooks.txt)
 
 As in wc3w-recomp: the generated code first calls `wc_hook(addr)`; a handler returning true makes
@@ -253,7 +272,7 @@ returns through the shadow stack (`fixes.cpp`, `jump`).
 ## Debugging
 
 As in wc3w-recomp: `WC_TRACE=1` (Windows calls), `WC_TRACE=2` (every instruction) with
-`WC_TRACE_AT=addr,lo-hi,...` (only those, with ST0-ST2 and the x87 control word), `WC_WATCH=addr`
+`WC_TRACE_AT=addr,lo-hi,...` (only those, with all eight registers, ST0-ST2 and the x87 control word; also without `WC_TRACE`, then no Windows calls), `WC_WATCH=addr`
 (writes), `WC_POKE=addr:byte,...` (patch memory before the start), `WC_HEADLESS=1`, `WC_WAV`,
 `WC_SCREENSHOT=file.png` after `WC_SCREENSHOT_AT` seconds (the run ends there), `WC_DUMP=file`
 (memory on an error), `WC_KEYS=ms:key,...` (`@x.y` moves the pointer, `+lmb`/`-lmb`), `WC_VIRTUAL_TIME=1` (below). New:

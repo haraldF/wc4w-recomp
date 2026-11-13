@@ -7,11 +7,12 @@ changes. Lines like "WC3W.EXE" → "WC4W.EXE" in comments aren't listed.
 
 ## Fixes to carry back to wc3w-recomp
 
-- The HD movies' subtitles: `runtime/srt.cpp`, `subtitle.cpp`, `subtitle.h`, `test/srt*`, FreeType
-  in `CMakeLists.txt`, `movie.cpp`'s `find_file` and `subtitles_for` (WC3W.EXE's option and
-  language addresses from its patch; check its `.srt` files' encoding).
+- `WC_TRACE_AT` without `WC_TRACE=2` (then no Windows calls), with all eight registers:
+  `runtime/cpu.cpp` (`wc_trace_ins`), `main.cpp`, `wc_rt.h`.
 
-Earlier ones were all carried back. These were carried back (on 11 November 2026): x87 rounding and
+The HD movies' subtitles were carried back on 13 November 2026 (`runtime/srt.cpp`,
+`subtitle.cpp`, `subtitle.h`, `test/srt*`, FreeType in `CMakeLists.txt`, `movie.cpp`'s `find_file`
+and `subtitles_for`). Earlier ones were all carried back. These were carried back (on 11 November 2026): x87 rounding and
 out-of-range conversions, division overflow, `WC_STRICT`, wrapped memory reported, `guest_ptr`, the
 hooks checked on both sides, the generator's summary and fragment filter, Ghidra's version in the
 stamps, the virtual clock, the movie fixes (headless frames taken, shared frames, the clock past the
@@ -24,7 +25,7 @@ and the integer math at 46EABCh...), `hooks.txt`, `cli.ts` (the modules, `DLL_AL
 scenario: a new game to the first mission, no setup or `WC4.CFG`; `UNHANDLED_OPS` 3; the PNG
 reader also takes indexed pictures, since its screenshots are 8-bit with a palette), `ddraw.cpp`
 and `host_sdl.cpp` (8 bits only), the window's title, `src/tre.ts` (two comments name WC3W.EXE's
-hash function). `npm run drift`: 16 of 34 shared files are the same.
+hash function). `npm run drift`: 20 of 40 shared files are the same.
 
 ## WC4-only (not for wc3w-recomp)
 
@@ -36,6 +37,9 @@ hash function). `npm run drift`: 16 of 34 shared files are the same.
   instead of 8-bit pixels and a palette (`host_sdl.cpp` follows, and screenshots are always RGB).
 - `runtime/movie.cpp`: WC4W.EXE's addresses (Play_Movie 483AD0h, the branch list, halt flag...),
   scene names from `..\..\data\englmovi\sc_0010.AVI`.
+  The subtitles' switch and language are the game's (4D8720h, 4B8014h); WC3W.EXE has neither, so
+  wc3w-recomp's reads GOG's patch settings (`wc3w_en.ini`, `wc3w_en_ingame.ini`) and `WC_SUBTITLES`.
+  A branch without its MP4 is skipped here (no AVI scenes); wc3w's plays the original movie.
 - `runtime/fixes.cpp`: the movie handler's AVI check skipped (475721h); the integer math
   replacements (49D73Ch...: WC4W.EXE's addresses).
 - `runtime/host_sdl.cpp`: the window's title.
